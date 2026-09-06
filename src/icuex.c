@@ -18,8 +18,9 @@
 ** unit and must define SQLITE_CORE, SQLITE_ENABLE_ICU, and
 ** SQLITE_ENABLE_ICUEX.  That arrangement allows this module to reuse the
 ** private icuCollationColl(), icuCollationDel(), and icuFunctionError()
-** routines from the upstream SQLite ICU extension without modifying icu.c or
-** duplicating its collation implementation.
+** routines from the upstream SQLite ICU extension without modifying icu.c.
+** The first collation reuses the upstream comparison implementation.  The
+** second deliberately implements different normalized-key semantics.
 **
 ** The surrounding build system is responsible for invoking
 ** sqlite3IcuexInit() from its aggregate built-in-extension initializer.  This
@@ -29,7 +30,7 @@
 ** SQL surface:
 **
 **   UTF_CI       ICU root collation at secondary strength.
-**   UTF_CI_AI    ICU root collation at primary strength.
+**   UTF_CI_AI    Lexical comparison of NFKD_CF_STRIP normalized keys.
 **   str_casefold(text)
 **   str_normalize(text, kind)
 **
@@ -81,6 +82,20 @@ typedef enum IcuexNormalizeMode {
   ICUEX_NORMALIZE_NFKC_CF,
   ICUEX_NORMALIZE_NFKD_CF_STRIP
 } IcuexNormalizeMode;
+
+/*
+** Result codes for transformations performed outside an SQL-function
+** context.  A collation callback has no sqlite3_context through which it can
+** report allocation, capacity, or ICU failures, so it must preserve this
+** information until it can log and interrupt the active database operation.
+*/
+typedef enum IcuexKeyResult {
+  ICUEX_KEY_OK = 0,
+  ICUEX_KEY_NOMEM,
+  ICUEX_KEY_TOOBIG,
+  ICUEX_KEY_ICU,
+  ICUEX_KEY_LENGTH
+} IcuexKeyResult;
 
 /*
 ** Report that a named SQL argument must be TEXT or NULL.
@@ -381,6 +396,70 @@ static int icuexCasefoldUtf16(
 }
 
 /*
+** Normalize one stage of a collation key without an sqlite3_context.
+**
+** nInput, nRequired, and *pnResult are UTF-16 code-unit counts.  ICU's first
+** call is a capacity preflight: U_BUFFER_OVERFLOW_ERROR is expected for a
+** nonempty result, while U_ZERO_ERROR is valid for an empty result.  The
+** caller owns *pzResult on success and must release it with sqlite3_free().
+**
+** The detailed result code is necessary because SQLite's xCompare interface
+** cannot return an SQL error.  *pIcuStatus is meaningful for ICUEX_KEY_ICU.
+*/
+static IcuexKeyResult icuexNormalizeKeyStage(
+  const UNormalizer2 *pNormalizer,
+  const UChar *zInput,
+  int32_t nInput,
+  UChar **pzResult,
+  int32_t *pnResult,
+  UErrorCode *pIcuStatus
+){
+  UErrorCode status = U_ZERO_ERROR;
+  sqlite3_uint64 nAllocate;
+  int32_t nRequired;
+  int32_t nWritten;
+  UChar *zResult;
+
+  *pzResult = 0;
+  *pnResult = 0;
+  *pIcuStatus = U_ZERO_ERROR;
+  if( pNormalizer==0 || zInput==0 || nInput<0 ) return ICUEX_KEY_LENGTH;
+
+  nRequired = unorm2_normalize(
+      pNormalizer, zInput, nInput, 0, 0, &status
+  );
+  if( status!=U_BUFFER_OVERFLOW_ERROR && U_FAILURE(status) ){
+    *pIcuStatus = status;
+    return ICUEX_KEY_ICU;
+  }
+  if( nRequired<0 || nRequired==INT32_MAX ) return ICUEX_KEY_TOOBIG;
+
+  nAllocate = ((sqlite3_uint64)(uint32_t)nRequired + 1u)
+            * (sqlite3_uint64)sizeof(UChar);
+  zResult = (UChar *)sqlite3_malloc64(nAllocate);
+  if( zResult==0 ) return ICUEX_KEY_NOMEM;
+
+  status = U_ZERO_ERROR;
+  nWritten = unorm2_normalize(
+      pNormalizer, zInput, nInput, zResult, nRequired + 1, &status
+  );
+  if( U_FAILURE(status) ){
+    sqlite3_free(zResult);
+    *pIcuStatus = status;
+    return ICUEX_KEY_ICU;
+  }
+  if( nWritten<0 || nWritten>nRequired ){
+    sqlite3_free(zResult);
+    return ICUEX_KEY_LENGTH;
+  }
+
+  zResult[nWritten] = 0;
+  *pzResult = zResult;
+  *pnResult = nWritten;
+  return ICUEX_KEY_OK;
+}
+
+/*
 ** Remove code points whose canonical combining class is nonzero.
 **
 ** nText and the return value are UTF-16 code-unit counts.  The source is
@@ -402,6 +481,223 @@ static int32_t icuexStripNonzeroCcc(UChar *zText, int32_t nText){
   }
   zText[iWrite] = 0;
   return iWrite;
+}
+
+/*
+** Construct the canonical UTF_CI_AI comparison key.
+**
+** This is exactly the NFKD_CF_STRIP operation exposed by str_normalize():
+** NFKC_Casefold, then NFKD, then removal of every code point whose canonical
+** combining class is nonzero.  The order ensures marks introduced by case
+** folding or compatibility mapping are exposed before filtering.  It also
+** intentionally preserves general-category marks whose CCC is zero.
+**
+** The returned length is in UTF-16 code units.  The caller owns *pzKey on
+** success.  Immutable Normalizer2 instances remain owned by ICU.
+*/
+static IcuexKeyResult icuexBuildCiAiKey(
+  const UChar *zInput,
+  int32_t nInput,
+  UChar **pzKey,
+  int32_t *pnKey,
+  UErrorCode *pIcuStatus
+){
+  UErrorCode status = U_ZERO_ERROR;
+  const UNormalizer2 *pNfkcCf;
+  const UNormalizer2 *pNfkd;
+  UChar *zFolded = 0;
+  int32_t nFolded = 0;
+  IcuexKeyResult result;
+
+  *pzKey = 0;
+  *pnKey = 0;
+  *pIcuStatus = U_ZERO_ERROR;
+
+  pNfkcCf = unorm2_getNFKCCasefoldInstance(&status);
+  if( U_FAILURE(status) || pNfkcCf==0 ){
+    *pIcuStatus = U_FAILURE(status) ? status : U_INTERNAL_PROGRAM_ERROR;
+    return ICUEX_KEY_ICU;
+  }
+  status = U_ZERO_ERROR;
+  pNfkd = unorm2_getNFKDInstance(&status);
+  if( U_FAILURE(status) || pNfkd==0 ){
+    *pIcuStatus = U_FAILURE(status) ? status : U_INTERNAL_PROGRAM_ERROR;
+    return ICUEX_KEY_ICU;
+  }
+
+  result = icuexNormalizeKeyStage(
+      pNfkcCf, zInput, nInput, &zFolded, &nFolded, pIcuStatus
+  );
+  if( result!=ICUEX_KEY_OK ) return result;
+
+  result = icuexNormalizeKeyStage(
+      pNfkd, zFolded, nFolded, pzKey, pnKey, pIcuStatus
+  );
+  sqlite3_free(zFolded);
+  if( result!=ICUEX_KEY_OK ) return result;
+
+  *pnKey = icuexStripNonzeroCcc(*pzKey, *pnKey);
+  return ICUEX_KEY_OK;
+}
+
+/*
+** Compare two explicitly sized native-endian UTF-16 strings by code unit.
+**
+** This is the emergency fallback required when UTF_CI_AI key construction
+** fails.  It is deterministic for a single invocation and does not inspect a
+** NUL terminator.  Odd or negative byte counts are outside SQLite's UTF-16
+** collation contract; they are nevertheless ordered by their nonnegative raw
+** byte prefixes so this mandatory callback result remains bounded.
+*/
+static int icuexCompareUtf16Fallback(
+  int nLeftByte,
+  const void *pLeft,
+  int nRightByte,
+  const void *pRight
+){
+  int i;
+  int nLeft;
+  int nRight;
+  const UChar *zLeft;
+  const UChar *zRight;
+
+  if( nLeftByte<0 || pLeft==0 ) nLeftByte = 0;
+  if( nRightByte<0 || pRight==0 ) nRightByte = 0;
+  if( (nLeftByte & 1)!=0 || (nRightByte & 1)!=0 ){
+    int nCommon = nLeftByte<nRightByte ? nLeftByte : nRightByte;
+    int cmp = nCommon>0 ? memcmp(pLeft, pRight, (size_t)nCommon) : 0;
+    if( cmp<0 ) return -1;
+    if( cmp>0 ) return 1;
+    return (nLeftByte>nRightByte) - (nLeftByte<nRightByte);
+  }
+
+  nLeft = nLeftByte / (int)sizeof(UChar);
+  nRight = nRightByte / (int)sizeof(UChar);
+  zLeft = (const UChar *)pLeft;
+  zRight = (const UChar *)pRight;
+  for(i=0; i<nLeft && i<nRight; i++){
+    if( zLeft[i]<zRight[i] ) return -1;
+    if( zLeft[i]>zRight[i] ) return 1;
+  }
+  return (nLeft>nRight) - (nLeft<nRight);
+}
+
+/*
+** Compare two valid UTF-16 normalized keys lexicographically by code point.
+**
+** U16_NEXT advances across surrogate pairs atomically.  Returning zero for
+** different source spellings that produce identical keys is essential for
+** SQLite equality, UNIQUE constraints, and indexed lookup semantics; no
+** source-text tiebreaker is permitted.
+*/
+static int icuexCompareCiAiKeys(
+  const UChar *zLeft,
+  int32_t nLeft,
+  const UChar *zRight,
+  int32_t nRight
+){
+  int32_t iLeft = 0;
+  int32_t iRight = 0;
+
+  while( iLeft<nLeft && iRight<nRight ){
+    UChar32 cLeft;
+    UChar32 cRight;
+    U16_NEXT(zLeft, iLeft, nLeft, cLeft);
+    U16_NEXT(zRight, iRight, nRight, cRight);
+    if( cLeft<cRight ) return -1;
+    if( cLeft>cRight ) return 1;
+  }
+  return (iLeft<nLeft) - (iRight<nRight);
+}
+
+/*
+** SQLite UTF-16 collation callback for UTF_CI_AI.
+**
+** Each operand is converted to its NFKD_CF_STRIP key and the keys are
+** compared by Unicode code point.  Embedded U+0000 is ordinary data because
+** both input and key lengths are explicit.
+**
+** SQLite's xCompare signature has no error-result channel.  If input lengths,
+** allocation, or ICU processing fail, this callback frees all temporaries,
+** records a diagnostic, and interrupts the active database operation.  It
+** then returns a provisional explicit-length ordering solely because SQLite
+** requires an integer return value.  The fallback is not part of the
+** supported collation semantics and must not be used to continue an index
+** mutation after the interrupt is observed.
+*/
+static int icuexCiAiCollation(
+  void *pContext,
+  int nLeftByte,
+  const void *pLeft,
+  int nRightByte,
+  const void *pRight
+){
+  sqlite3 *db = (sqlite3 *)pContext;
+  UChar *zLeftKey = 0;
+  UChar *zRightKey = 0;
+  int32_t nLeftKey = 0;
+  int32_t nRightKey = 0;
+  UErrorCode status = U_ZERO_ERROR;
+  IcuexKeyResult result;
+  int cmp;
+  UChar emptyInput = 0;
+  const UChar *zLeftInput = pLeft!=0
+                          ? (const UChar *)pLeft : &emptyInput;
+  const UChar *zRightInput = pRight!=0
+                           ? (const UChar *)pRight : &emptyInput;
+
+  if( nLeftByte<0 || nRightByte<0
+   || (nLeftByte & 1)!=0 || (nRightByte & 1)!=0
+   || (pLeft==0 && nLeftByte!=0)
+   || (pRight==0 && nRightByte!=0) ){
+    result = ICUEX_KEY_LENGTH;
+  }else{
+    result = icuexBuildCiAiKey(
+        zLeftInput,
+        (int32_t)(nLeftByte / (int)sizeof(UChar)),
+        &zLeftKey,
+        &nLeftKey,
+        &status
+    );
+    if( result==ICUEX_KEY_OK ){
+      result = icuexBuildCiAiKey(
+          zRightInput,
+          (int32_t)(nRightByte / (int)sizeof(UChar)),
+          &zRightKey,
+          &nRightKey,
+          &status
+      );
+    }
+  }
+
+  if( result==ICUEX_KEY_OK ){
+    cmp = icuexCompareCiAiKeys(
+        zLeftKey, nLeftKey, zRightKey, nRightKey
+    );
+    sqlite3_free(zLeftKey);
+    sqlite3_free(zRightKey);
+    return cmp;
+  }
+
+  sqlite3_free(zLeftKey);
+  sqlite3_free(zRightKey);
+  if( result==ICUEX_KEY_ICU ){
+    sqlite3_log(
+        SQLITE_ERROR,
+        "icuex: UTF_CI_AI key generation failed: %s",
+        u_errorName(status)
+    );
+  }else if( result==ICUEX_KEY_NOMEM ){
+    sqlite3_log(SQLITE_NOMEM, "icuex: UTF_CI_AI key allocation failed");
+  }else if( result==ICUEX_KEY_TOOBIG ){
+    sqlite3_log(SQLITE_TOOBIG, "icuex: UTF_CI_AI key is too large");
+  }else{
+    sqlite3_log(SQLITE_ERROR, "icuex: invalid UTF_CI_AI input length");
+  }
+  if( db!=0 ) sqlite3_interrupt(db);
+  return icuexCompareUtf16Fallback(
+      nLeftByte, pLeft, nRightByte, pRight
+  );
 }
 
 /*
@@ -586,34 +882,27 @@ static void icuexNormalizeFunc(
   }
 
   {
-    const UNormalizer2 *pNfkcCf;
-    const UNormalizer2 *pNfkd;
-    UChar *zFolded;
-    int32_t nFolded;
-
-    pNfkcCf = unorm2_getNFKCCasefoldInstance(&status);
-    if( U_FAILURE(status) || pNfkcCf==0 ){
-      if( U_SUCCESS(status) ) status = U_INTERNAL_PROGRAM_ERROR;
-      icuFunctionError(pCtx, "unorm2_getNFKCCasefoldInstance", status);
+    IcuexKeyResult result = icuexBuildCiAiKey(
+        zInput, nInput, &zResult, &nResult, &status
+    );
+    if( result==ICUEX_KEY_NOMEM ){
+      sqlite3_result_error_nomem(pCtx);
       return;
     }
-    pNfkd = unorm2_getNFKDInstance(&status);
-    if( U_FAILURE(status) || pNfkd==0 ){
-      if( U_SUCCESS(status) ) status = U_INTERNAL_PROGRAM_ERROR;
-      icuFunctionError(pCtx, "unorm2_getNFKDInstance", status);
+    if( result==ICUEX_KEY_TOOBIG ){
+      sqlite3_result_error_toobig(pCtx);
       return;
     }
-    if( !icuexNormalizeUtf16(
-            pCtx, pNfkcCf, zInput, nInput, &zFolded, &nFolded
-        ) ) return;
-    if( !icuexNormalizeUtf16(
-            pCtx, pNfkd, zFolded, nFolded, &zResult, &nResult
-        ) ){
-      sqlite3_free(zFolded);
+    if( result==ICUEX_KEY_ICU ){
+      icuFunctionError(pCtx, "NFKD_CF_STRIP", status);
       return;
     }
-    sqlite3_free(zFolded);
-    nResult = icuexStripNonzeroCcc(zResult, nResult);
+    if( result!=ICUEX_KEY_OK ){
+      sqlite3_result_error(
+          pCtx, "NFKD_CF_STRIP transformation length error", -1
+      );
+      return;
+    }
     icuexReturnText(pCtx, zResult, nResult);
   }
 }
@@ -624,7 +913,7 @@ static void icuexNormalizeFunc(
 ** sqlite3_create_collation_v2() does not invoke xDestroy when registration
 ** fails, so this function closes the collator itself on that path.
 */
-static int icuexRegisterCollation(
+static int icuexRegisterIcuCollation(
   sqlite3 *db,
   const char *zName,
   const char *zLocale,
@@ -667,9 +956,18 @@ static int icuexRegisterCollation(
 static int icuexRegister(sqlite3 *db){
   int rc;
 
-  rc = icuexRegisterCollation(db, "UTF_CI", "root", UCOL_SECONDARY);
+  rc = icuexRegisterIcuCollation(
+      db, "UTF_CI", "root", UCOL_SECONDARY
+  );
   if( rc==SQLITE_OK ){
-    rc = icuexRegisterCollation(db, "UTF_CI_AI", "root", UCOL_PRIMARY);
+    rc = sqlite3_create_collation_v2(
+        db,
+        "UTF_CI_AI",
+        SQLITE_UTF16,
+        (void *)db,
+        icuexCiAiCollation,
+        0
+    );
   }
   if( rc==SQLITE_OK ){
     rc = sqlite3_create_function(
