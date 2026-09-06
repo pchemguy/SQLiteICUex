@@ -2,7 +2,6 @@
 url: https://chatgpt.com/c/6a9cf257-d748-83eb-93ad-1f1a3999eb9a
 ---
 
-```
 ## `icuex` SQLite extension specification
 
 ### 1. Purpose and scope
