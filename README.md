@@ -1,21 +1,17 @@
 # icuex
 
-`icuex` adds two ICU collations and two Unicode transformation functions to a
-custom SQLite amalgamation. Every feature is registered automatically for each
-new database connection by the surrounding amalgamation's aggregate built-in
-extension initializer.
+`icuex` adds two ICU-backed Unicode collations and two Unicode transformation functions to a custom SQLite amalgamation. Every feature is registered automatically for each new database connection by the surrounding amalgamation's aggregate built-in extension initializer.
 
-The extension is intentionally not loadable and has no supported public C API.
-Its complete public interface is SQL.
+The extension is intentionally not loadable and has no supported public C API. Its complete public interface is SQL.
 
 ## 1. SQL API
 
 ### Collations
 
-| Name | ICU configuration | Semantics |
-|---|---|---|
-| `UTF_CI` | root locale, `UCOL_SECONDARY` | Case-insensitive; accents remain significant |
-| `UTF_CI_AI` | root locale, `UCOL_PRIMARY` | Case-insensitive and accent-insensitive |
+| Name        | ICU configuration                          | Semantics                                                                 |
+| ----------- | ------------------------------------------ | ------------------------------------------------------------------------- |
+| `UTF_CI`    | root locale, `UCOL_SECONDARY`              | Case-insensitive; accents remain significant                              |
+| `UTF_CI_AI` | lexical comparison of `NFKD_CF_STRIP` keys | Locale-independent case- and accent-insensitive normalized-key comparison |
 
 Examples:
 
@@ -26,11 +22,13 @@ SELECT 'и' = 'й' COLLATE UTF_CI;                  -- 0
 
 SELECT 'ЙЁ' = 'ие' COLLATE UTF_CI_AI;             -- 1
 SELECT 'É' = 'e' COLLATE UTF_CI_AI;               -- 1
+SELECT 'Straße' = 'STRASSE' COLLATE UTF_CI_AI;    -- 1
+SELECT 'Ａ①' = 'a1' COLLATE UTF_CI_AI;             -- 1
 ```
 
-These are ICU root collations. `UTF_CI` is not defined as a comparison of
-`str_casefold()` results, and neither collation promises Python or Qt lexical
-ordering.
+`UTF_CI` is an ICU root linguistic collation and is not defined as a comparison of `str_casefold()` output. `UTF_CI_AI` has deliberately different semantics: each operand is transformed by NFKC_Casefold, then NFKD, then removal of every code point whose canonical combining class is nonzero. The resulting keys are compared lexicographically by Unicode code point. Thus `UTF_CI_AI` equality is the same as equality of the corresponding `NFKD_CF_STRIP` keys; no original text tiebreaker is applied.
+
+`UTF_CI_AI` is not equivalent to ICU root collation at `UCOL_PRIMARY`. Root primary strength retains some distinctions, including `Й/и` and `Ё/е`, and therefore does not implement universal accent removal. The normalized-key collation also applies compatibility mappings and removes default ignorables, so its concise name does not imply that case and accents are its only equivalences.
 
 The collations may be used in schema declarations and indexes:
 
@@ -44,9 +42,7 @@ CREATE INDEX terms_by_name ON terms(term COLLATE UTF_CI);
 
 ### `str_casefold(text)`
 
-`str_casefold()` performs full, locale-independent Unicode default case
-folding using ICU `u_strFoldCase(..., U_FOLD_CASE_DEFAULT, ...)`. It does not
-normalize its input or output.
+`str_casefold()` performs full, locale-independent Unicode default case folding using ICU `u_strFoldCase(..., U_FOLD_CASE_DEFAULT, ...)`. It does not normalize its input or output.
 
 ```sql
 SELECT str_casefold('Straße');  -- strasse
@@ -56,16 +52,15 @@ SELECT str_casefold('Σσς');     -- σσσ
 
 ### `str_normalize(text, kind)`
 
-The mode is an exact ASCII token matched case-insensitively. Whitespace is not
-trimmed and aliases are not accepted.
+The mode is an exact ASCII token matched case-insensitively. Whitespace is not trimmed and aliases are not accepted.
 
-| Mode | ICU processing |
-|---|---|
-| `NFC` | `unorm2_getNFCInstance()` |
-| `NFD` | `unorm2_getNFDInstance()` |
-| `NFKC` | `unorm2_getNFKCInstance()` |
-| `NFKD` | `unorm2_getNFKDInstance()` |
-| `NFKC_CF` | `unorm2_getNFKCCasefoldInstance()` |
+| Mode            | ICU processing                                                       |
+| --------------- | -------------------------------------------------------------------- |
+| `NFC`           | `unorm2_getNFCInstance()`                                            |
+| `NFD`           | `unorm2_getNFDInstance()`                                            |
+| `NFKC`          | `unorm2_getNFKCInstance()`                                           |
+| `NFKD`          | `unorm2_getNFKDInstance()`                                           |
+| `NFKC_CF`       | `unorm2_getNFKCCasefoldInstance()`                                   |
 | `NFKD_CF_STRIP` | NFKC_Casefold, then NFKD, then retain only code points with CCC zero |
 
 Examples:
@@ -84,12 +79,12 @@ SELECT str_normalize('Straße', 'NFKC_CF');
 -- strasse
 
 SELECT str_normalize('ЁЙÉ', 'NFKD_CF_STRIP');
--- еие
+-- еиe
 ```
 
-`NFKD_CF_STRIP` filters by canonical combining class, not Unicode general
-category. A mark in category `Mn`, `Mc`, or `Me` remains when its canonical
-combining class is zero.
+The final character in that result is Latin `e`; normalization and CCC filtering do not transliterate Latin characters into Cyrillic.
+
+`NFKD_CF_STRIP` filters by canonical combining class, not Unicode general category. A mark in category `Mn`, `Mc`, or `Me` remains when its canonical combining class is zero.
 
 ## 2. SQL contract
 
@@ -99,13 +94,11 @@ Both functions are registered with exactly:
 SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS
 ```
 
-They do not use `SQLITE_SUBTYPE`, `SQLITE_RESULT_SUBTYPE`, or
-`SQLITE_DIRECTONLY`.
+They do not use `SQLITE_SUBTYPE`, `SQLITE_RESULT_SUBTYPE`, or `SQLITE_DIRECTONLY`.
 
 Behavior common to both functions:
 
-- `NULL` propagates. Either argument being `NULL` makes `str_normalize()` return
-  `NULL`.
+- `NULL` propagates. Either argument being `NULL` makes `str_normalize()` return `NULL`.
 - Every non-`NULL` argument must have SQLite storage class `TEXT`.
 - Integers, real values, and blobs are rejected instead of being coerced.
 - Successful output has storage class `text`.
@@ -113,12 +106,9 @@ Behavior common to both functions:
 - Embedded U+0000 characters are preserved in transformed text.
 - Explicit lengths are used throughout; embedded NUL does not terminate text.
 
-Invalid normalization modes produce an error containing a safely escaped,
-bounded preview and the complete list of supported modes. Invalid, empty,
-whitespace-padded, non-ASCII, and embedded-NUL mode names are rejected.
+Invalid normalization modes produce an error containing a safely escaped, bounded preview and the complete list of supported modes. Invalid, empty, whitespace-padded, non-ASCII, and embedded-NUL mode names are rejected.
 
-Inputs are expected to contain well-formed Unicode. Deliberately malformed
-SQLite text encodings are outside the portable contract.
+Inputs are expected to contain well-formed Unicode. Deliberately malformed SQLite text encodings are outside the portable contract.
 
 ## 3. Amalgamation integration
 
@@ -129,16 +119,14 @@ SQLITE_ENABLE_ICU
 SQLITE_ENABLE_ICUEX
 ```
 
-The generated amalgamation must place sources in this order within one C
-translation unit:
+The generated amalgamation must place sources in this order within one C translation unit:
 
 ```text
 ext/icu/icu.c
 icuex.c
 ```
 
-This order is required because `icuex.c` reuses these private `static`
-definitions from the upstream SQLite ICU extension:
+This order is required because `icuex.c` reuses these private `static` definitions from the upstream SQLite ICU extension:
 
 ```c
 icuCollationColl
@@ -152,53 +140,38 @@ icuFunctionError
 int sqlite3IcuexInit(sqlite3 *db);
 ```
 
-The surrounding build system must generate a separate aggregate-initializer
-module that calls `sqlite3IcuexInit(db)` when `icuex` is enabled. The build
-system, not this extension, is responsible for configuring SQLite with an
-aggregate initializer, conventionally:
+The surrounding build system must generate a separate aggregate-initializer module that calls `sqlite3IcuexInit(db)` when `icuex` is enabled. The build system, not this extension, is responsible for configuring SQLite with an aggregate initializer, conventionally:
 
 ```text
 SQLITE_EXTRA_AUTOEXT=sqlite3ExtraAutoExtInit
 ```
 
-The name, implementation, generation, and ordering logic of
-`sqlite3ExtraAutoExtInit()` are outside this package. `icuex.c` neither defines
-nor references that function and does not call `sqlite3_auto_extension()`.
+The name, implementation, generation, and ordering logic of `sqlite3ExtraAutoExtInit()` are outside this package. `icuex.c` neither defines nor references that function and does not call `sqlite3_auto_extension()`.
 
-The aggregate initializer must propagate a non-`SQLITE_OK` result from
-`sqlite3IcuexInit()`. The component initializer itself stops at the first
-registration failure.
+The aggregate initializer must propagate a non-`SQLITE_OK` result from `sqlite3IcuexInit()`. The component initializer itself stops at the first registration failure.
 
-There is no `sqlite3_icuex_init()` loadable-extension entry point. Do not
-compile `icuex.c` as a separate object or shared library.
+There is no `sqlite3_icuex_init()` loadable-extension entry point. Do not compile `icuex.c` as a separate object or shared library.
 
 ## 4. Memory and ownership
 
-- Each collation owns a distinct `UCollator`.
-- After successful `sqlite3_create_collation_v2()`, SQLite owns the collator and
-  closes it through the upstream `icuCollationDel()` callback.
+- `UTF_CI` owns one `UCollator`; `UTF_CI_AI` owns no persistent ICU object.
+- After successful registration of `UTF_CI`, SQLite owns the collator and closes it through the upstream `icuCollationDel()` callback.
 - If registration fails, `icuex` closes the untransferred collator directly.
+- `UTF_CI_AI` constructs two temporary UTF-16 keys for each comparison and releases both on every path. It uses explicit lengths, so embedded U+0000 is compared as ordinary text rather than as a terminator.
+- SQLite collation callbacks cannot return SQL errors. If key allocation or ICU processing fails, `UTF_CI_AI` logs the failure, interrupts the active database operation, cleans up, and returns a provisional explicit-length comparison only to satisfy the callback ABI.
 - ICU transformation output is sized with preflight calls.
-- Intermediate UTF-16 and final UTF-8 result buffers use `sqlite3_malloc64()`.
-  The final UTF-8 buffer is transferred to SQLite with `sqlite3_free()` as its
-  destructor.
-- Final results use UTF-8 so SQLite does not reinterpret and remove a leading
-  U+FEFF as a UTF-16 byte-order mark.
+- Intermediate UTF-16 and final UTF-8 result buffers use `sqlite3_malloc64()`. The final UTF-8 buffer is transferred to SQLite with `sqlite3_free()` as its destructor.
+- Final results use UTF-8 so SQLite does not reinterpret and remove a leading U+FEFF as a UTF-16 byte-order mark.
 - Buffer lengths distinguish bytes, UTF-16 code units, and Unicode code points.
 - Supplementary characters are iterated as complete code points.
 
-The standard ICU Normalizer2 objects are immutable singletons owned by ICU.
-`icuex` resolves them as needed and never closes them. No mutable global cache
-is used.
+The standard ICU Normalizer2 objects are immutable singletons owned by ICU. `icuex` resolves them as needed and never closes them. No mutable global cache is used.
 
 ## 5. Unicode and index stability
 
-Case-fold mappings, normalization data, and collation weights come from the ICU
-version linked into SQLite. Results for characters added or changed in newer
-Unicode versions may therefore change after an ICU upgrade.
+Case-fold mappings, normalization data, and collation weights come from the ICU version linked into SQLite. Results for characters added or changed in newer Unicode versions may therefore change after an ICU upgrade.
 
-Persistent indexes and constraints using `UTF_CI` or `UTF_CI_AI` depend on the
-linked ICU collation data. After changing ICU versions or collation semantics,
+Persistent indexes and constraints using `UTF_CI` depend on ICU collation data; those using `UTF_CI_AI` depend on ICU case-folding, compatibility, normalization, and combining-class data. After changing ICU versions or collation semantics,
 rebuild affected indexes:
 
 ```sql
@@ -207,9 +180,7 @@ REINDEX;
 
 ## 6. Testing
 
-The test suite uses only Python's standard `sqlite3` module and SQL. That Python
-module must already be linked against the custom SQLite library containing ICU,
-`icuex`, and the external aggregate initializer.
+The test suite uses only Python's standard `sqlite3` module and SQL. That Python module must already be linked against the custom SQLite library containing ICU, `icuex`, and the external aggregate initializer.
 
 Install pytest in the active environment and run:
 
@@ -225,22 +196,19 @@ The tests deliberately do not:
 - Use `ctypes`, CFFI, or compiled C test fixtures.
 - Call private C helpers.
 
-`PRAGMA collation_list` and `PRAGMA function_list` verify automatic
-registration, arities, preferred encoding, and flags. Behavioral modules cover
-collations, normalization modes, strict SQL types, embedded NUL, long input,
-indexes, generated columns, and reopening file-backed databases.
+`PRAGMA collation_list` and `PRAGMA function_list` verify automatic registration, arities, preferred encoding, and flags. Behavioral modules cover collations, normalization modes, strict SQL types, embedded NUL, long input, indexes, generated columns, and reopening file-backed databases.
 
 ## 7. Files
 
 ```text
-icuex.c                         implementation
-README.md                       usage and integration guide
-pyproject.toml                  pytest configuration
-tests/conftest.py               connection fixtures without setup SQL
-tests/test_introspection.py     automatic-registration checks
-tests/test_collations.py        collation behavior
-tests/test_casefold.py          Unicode default case folding
-tests/test_normalization_*.py   standard and composite normalization
-tests/test_sql_contract.py      NULL, type, mode, and length contracts
+icuex.c                          implementation
+README.md                        usage and integration guide
+pyproject.toml                   pytest configuration
+tests/conftest.py                connection fixtures without setup SQL
+tests/test_introspection.py      automatic-registration checks
+tests/test_collations.py         collation behavior
+tests/test_casefold.py           Unicode default case folding
+tests/test_normalization_*.py    standard and composite normalization
+tests/test_sql_contract.py       NULL, type, mode, and length contracts
 tests/test_schema_integration.py schema, index, and reopen behavior
 ```
