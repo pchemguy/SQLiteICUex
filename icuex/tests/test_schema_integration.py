@@ -59,6 +59,28 @@ def test_declared_collation_index_is_used(db: sqlite3.Connection) -> None:
     ).fetchone()[0] == "Alpha"
 
 
+def test_utf_ci_ai_index_is_used_for_normalized_lookup(
+    db: sqlite3.Connection,
+) -> None:
+    """Use a declared UTF_CI_AI index for a normalized-key equality lookup."""
+
+    db.execute("CREATE TABLE search_terms(term TEXT COLLATE UTF_CI_AI)")
+    db.execute("CREATE INDEX search_terms_ai ON search_terms(term)")
+    db.executemany(
+        "INSERT INTO search_terms VALUES (?)", [("ЙЁ",), ("École",), ("Beta",)]
+    )
+
+    plan = db.execute(
+        "EXPLAIN QUERY PLAN "
+        "SELECT term FROM search_terms WHERE term = ?",
+        ("ие",),
+    ).fetchall()
+    assert any("search_terms_ai" in row[-1] for row in plan)
+    assert db.execute(
+        "SELECT term FROM search_terms WHERE term = ?", ("ие",)
+    ).fetchone()[0] == "ЙЁ"
+
+
 def test_file_schema_reopens_without_setup_sql(connect, tmp_path: Path) -> None:
     """Use collations and generated expressions immediately after reopening."""
 
@@ -104,4 +126,3 @@ def test_parameterized_statement_on_fresh_connection(connect) -> None:
         assert row == ("strasse", "e", 1)
     finally:
         connection.close()
-

@@ -41,17 +41,43 @@ def test_utf_ci_preserves_accent_distinctions(
 
 
 @pytest.mark.parametrize(
-    ("left", "right"), [("ЙЁ", "ие"), ("É", "e"), ("Å", "a")]
+    ("left", "right"),
+    [
+        ("ЙЁ", "ие"),
+        ("É", "e"),
+        ("Å", "a"),
+        ("Straße", "STRASSE"),
+        ("Ａ①", "a1"),
+        ("A\u00adB", "ab"),
+    ],
 )
-def test_utf_ci_ai_ignores_case_and_accents(
+def test_utf_ci_ai_normalized_key_equivalence(
     db: sqlite3.Connection, left: str, right: str
 ) -> None:
-    """Verify primary-strength case and accent equivalence."""
+    """Verify equality through NFKD_CF_STRIP normalized keys."""
 
     result = db.execute(
         "SELECT ? = ? COLLATE UTF_CI_AI", (left, right)
     ).fetchone()[0]
     assert result == 1
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [("ЙЁ", "ие"), ("É", "e"), ("Ａ①", "a1"), ("A\u00adB", "ab")],
+)
+def test_utf_ci_ai_agrees_with_nfkd_cf_strip_keys(
+    db: sqlite3.Connection, left: str, right: str
+) -> None:
+    """Verify selected collation equivalences match exposed search keys."""
+
+    collation_equal, keys_equal = db.execute(
+        "SELECT ? = ? COLLATE UTF_CI_AI, "
+        "str_normalize(?, 'NFKD_CF_STRIP') = "
+        "str_normalize(?, 'NFKD_CF_STRIP')",
+        (left, right, left, right),
+    ).fetchone()
+    assert collation_equal == keys_equal == 1
 
 
 def test_utf_ci_ai_does_not_merge_scripts(db: sqlite3.Connection) -> None:
@@ -82,12 +108,12 @@ def test_utf_ci_unique_constraint(db: sqlite3.Connection) -> None:
 
 
 def test_utf_ci_ai_unique_constraint(db: sqlite3.Connection) -> None:
-    """Verify accent variants conflict under UTF_CI_AI uniqueness."""
+    """Verify normalized-key variants conflict under UTF_CI_AI uniqueness."""
 
     db.execute("CREATE TABLE terms(term TEXT UNIQUE COLLATE UTF_CI_AI)")
-    db.execute("INSERT INTO terms VALUES ('e')")
+    db.execute("INSERT INTO terms VALUES ('ЙЁ')")
     with pytest.raises(sqlite3.IntegrityError):
-        db.execute("INSERT INTO terms VALUES ('É')")
+        db.execute("INSERT INTO terms VALUES ('ие')")
 
 
 def test_order_by_uses_utf_ci(db: sqlite3.Connection) -> None:
@@ -114,4 +140,10 @@ def test_embedded_nul_is_not_a_collation_terminator(
     ).fetchone()[0] == 1
     assert db.execute(
         "SELECT ? = ? COLLATE UTF_CI", ("a\x00x", "A\x00Y")
+    ).fetchone()[0] == 0
+    assert db.execute(
+        "SELECT ? = ? COLLATE UTF_CI_AI", ("É\x00Й", "e\x00и")
+    ).fetchone()[0] == 1
+    assert db.execute(
+        "SELECT ? = ? COLLATE UTF_CI_AI", ("É\x00Й", "e\x00к")
     ).fetchone()[0] == 0
