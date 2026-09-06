@@ -1,0 +1,140 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+
+[project]
+name = "icuex"
+version = "0.0.0"
+description = "SQLite regexp matches extension."
+
+dependencies = [
+]
+
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+    "pytest-benchmark",
+    "coverage",
+]
+
+lint = [
+    "ruff",
+    "mypy",
+]
+
+tools = [
+    "hatch",
+    "uv",
+]
+
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pytest-benchmark",
+    "coverage",
+    "ruff",
+    "mypy",
+    "hatch",
+    "uv",
+]
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["icuex/src/icuex"]
+
+
+[tool.ruff]
+# Match Black defaults to minimize surprise.
+line-length = 88
+indent-width = 4
+respect-gitignore = true
+
+# Keep CI noise down; allow intentional "unused" patterns.
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    "__pypackages__",
+    ".mypy_cache",
+    ".pytest_cache",
+]
+
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+
+[tool.ruff.format]
+# Black-like formatting.
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "ANN", # flake8 type annotations
+    #"RUF", # ruff-specific rules
+]
+
+
+# Avoid overreach / churny style rules that don't pay for themselves in R&D code.
+ignore = [
+    "E501",   # line length: formatter handles wrapping; keep lint silent
+    "B008",   # function calls in defaults; common/acceptable for small factories in research code
+]
+
+# Enable autofix, but keep it safe and unsurprising.
+fixable = ["ALL"]
+unfixable = [
+    # Don't let auto-fix rewrite exception messages / f-strings in ways you don't expect.
+    # (Optional; remove if you want aggressive rewrites.)
+]
+
+
+[tool.ruff.lint.per-file-ignores]
+# Tests can be looser.
+"pblob/tests/**/*.py" = [
+    "E402",   # imports not at top (fixtures sometimes)
+    "F811",   # redefinition (pytest param fixtures can trip this)
+    "B018",   # useless expression (sometimes used as markers)
+]
+
+# __init__.py often intentionally re-exports.
+"**/__init__.py" = ["F401"]
+
+# Script-ish entrypoints / notebooks-exported files often need some flexibility.
+"scripts/**/*.py" = ["E402", "F401"]
+
+
+[tool.ruff.lint.isort]
+# Keep imports stable across the repo; update if your top-level package differs.
+known-first-party = ["pblob"]
+combine-as-imports = true
+
+
+[tool.pytest]
+addopts = ["-ra", "-q"]
+testpaths = ["icuex/tests"]
+pythonpath = ["icuex/src", "icuex/src/icuex"]
+markers = [
+    "complexity: adversarial scalability and pathological-runtime regression tests",
+]
+
+
+[tool.mypy]
+strict = true
+warn_unused_configs = true
+warn_return_any = true
+disallow_untyped_defs = true
