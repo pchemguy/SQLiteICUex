@@ -1,3 +1,6 @@
+---
+url: https://chatgpt.com/c/6a9cf257-d748-83eb-93ad-1f1a3999eb9a
+---
 # icuex
 
 `icuex` adds two ICU-backed Unicode collations and two Unicode transformation functions to a custom SQLite amalgamation. Every feature is registered automatically for each new database connection by the surrounding amalgamation's aggregate built-in extension initializer.
