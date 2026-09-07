@@ -1,4 +1,4 @@
-"""Verify automatic icuex registration exclusively through SQLite PRAGMAs."""
+"""Verify per-connection icuex registration through SQLite PRAGMAs."""
 
 from __future__ import annotations
 
@@ -54,14 +54,16 @@ def _assert_icuex_surface(connection: sqlite3.Connection) -> None:
         assert not row["flags"] & SQLITE_RESULT_SUBTYPE
 
 
-def test_surface_is_present_without_setup(db: sqlite3.Connection) -> None:
-    """Require all SQL features on the fixture's untouched connection."""
+def test_surface_is_present_on_fresh_connection(
+    db: sqlite3.Connection,
+) -> None:
+    """Require all SQL features on a newly prepared test connection."""
 
     _assert_icuex_surface(db)
 
 
 def test_surface_is_present_on_simultaneous_connections(connect) -> None:
-    """Require independent automatic registration on concurrent connections."""
+    """Require independent registration on concurrent connections."""
 
     first = connect(":memory:")
     second = connect(":memory:")
@@ -76,7 +78,7 @@ def test_surface_is_present_on_simultaneous_connections(connect) -> None:
 def test_surface_survives_file_database_reopen(
     connect, tmp_path: Path
 ) -> None:
-    """Require automatic registration before and after reopening a database."""
+    """Require registration before and after reopening a database."""
 
     path = tmp_path / "introspection.db"
     first = connect(path)
@@ -92,4 +94,3 @@ def test_surface_survives_file_database_reopen(
         _assert_icuex_surface(second)
     finally:
         second.close()
-

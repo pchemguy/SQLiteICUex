@@ -81,7 +81,9 @@ def test_utf_ci_ai_index_is_used_for_normalized_lookup(
     ).fetchone()[0] == "ЙЁ"
 
 
-def test_file_schema_reopens_without_setup_sql(connect, tmp_path: Path) -> None:
+def test_file_schema_reopens_with_fresh_registration(
+    connect, tmp_path: Path
+) -> None:
     """Use collations and generated expressions immediately after reopening."""
 
     path = tmp_path / "persistent.db"

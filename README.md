@@ -4,9 +4,12 @@ url: https://chatgpt.com/c/6a9cf257-d748-83eb-93ad-1f1a3999eb9a
 
 # ICUex
 
-`icuex` adds two ICU-backed Unicode collations and two Unicode transformation functions to a custom SQLite amalgamation. Every feature is registered automatically for each new database connection by the surrounding amalgamation's aggregate built-in extension initializer.
+`icuex` adds two ICU-backed Unicode collations and two Unicode transformation functions to SQLite. The same source supports two build modes:
 
-The extension is intentionally not loadable and has no supported public C API. Its complete public interface is SQL.
+- With `SQLITE_CORE`, it is a built-in component registered for each new connection by the surrounding build's aggregate initializer.
+- Without `SQLITE_CORE`, it is a conventional loadable extension exporting `sqlite3_icuex_init()`.
+
+`icuex.c` uses only public SQLite and ICU APIs. It is completely independent of SQLite's `ext/icu/icu.c`; that extension may be enabled separately but is not a build or source-order prerequisite. The supported data interface is SQL.
 
 ## 1. SQL API
 
@@ -27,10 +30,11 @@ SELECT 'и' = 'й' COLLATE UTF_CI;                  -- 0
 SELECT 'ЙЁ' = 'ие' COLLATE UTF_CI_AI;             -- 1
 SELECT 'É' = 'e' COLLATE UTF_CI_AI;               -- 1
 SELECT 'Straße' = 'STRASSE' COLLATE UTF_CI_AI;    -- 1
-SELECT 'Ａ①' = 'a1' COLLATE UTF_CI_AI;            -- 1
+SELECT 'Ａ①' = 'a1' COLLATE UTF_CI_AI;             -- 1
 ```
 
-`UTF_CI` is an ICU root linguistic collation and is not defined as a comparison of `str_casefold()` output. `UTF_CI_AI` has deliberately different semantics: each operand is transformed by NFKC_Casefold, then NFKD, then removal of every code point whose canonical combining class is nonzero. The resulting keys are compared lexicographically by Unicode code point. Thus `UTF_CI_AI` equality is the same as equality of the corresponding `NFKD_CF_STRIP` keys; no original text tiebreaker is applied.
+`UTF_CI` is an ICU root linguistic collation and is not defined as a comparison of `str_casefold()` output. `UTF_CI_AI` has deliberately different semantics: each operand is transformed by NFKC_Casefold, then NFKD, then removal of every
+code point whose canonical combining class is nonzero. The resulting keys are compared lexicographically by Unicode code point. Thus `UTF_CI_AI` equality is the same as equality of the corresponding `NFKD_CF_STRIP` keys; no original text tiebreaker is applied.
 
 `UTF_CI_AI` is not equivalent to ICU root collation at `UCOL_PRIMARY`. Root primary strength retains some distinctions, including `Й/и` and `Ё/е`, and therefore does not implement universal accent removal. The normalized-key collation also applies compatibility mappings and removes default ignorables, so its concise name does not imply that case and accents are its only equivalences.
 
@@ -114,37 +118,20 @@ Invalid normalization modes produce an error containing a safely escaped, bounde
 
 Inputs are expected to contain well-formed Unicode. Deliberately malformed SQLite text encodings are outside the portable contract.
 
-## 3. Amalgamation integration
+## 3. Build and integration
 
-The build must define:
+### Built-in mode
 
-```text
-SQLITE_ENABLE_ICU
-SQLITE_ENABLE_ICUEX
-```
+Compile `icuex.c` with `SQLITE_CORE` defined. It may be included in a custom amalgamation translation unit or compiled as a separate object and linked into the same library or executable. No ordering relative to `ext/icu/icu.c` is required.
 
-The generated amalgamation must place sources in this order within one C translation unit:
-
-```text
-ext/icu/icu.c
-icuex.c
-```
-
-This order is required because `icuex.c` reuses these private `static` definitions from the upstream SQLite ICU extension:
-
-```c
-icuCollationColl
-icuCollationDel
-icuFunctionError
-```
-
-`icuex.c` provides only this internal component initializer:
+Built-in mode provides this component initializer:
 
 ```c
 int sqlite3IcuexInit(sqlite3 *db);
 ```
 
-The surrounding build system must generate a separate aggregate-initializer module that calls `sqlite3IcuexInit(db)` when `icuex` is enabled. The build system, not this extension, is responsible for configuring SQLite with an aggregate initializer, conventionally:
+The surrounding build system must generate a separate aggregate-initializer module that calls `sqlite3IcuexInit(db)` when `icuex` is enabled. The build may conventionally use `SQLITE_ENABLE_ICUEX` to select the source and configure
+SQLite with:
 
 ```text
 SQLITE_EXTRA_AUTOEXT=sqlite3ExtraAutoExtInit
@@ -154,12 +141,40 @@ The name, implementation, generation, and ordering logic of `sqlite3ExtraAutoExt
 
 The aggregate initializer must propagate a non-`SQLITE_OK` result from `sqlite3IcuexInit()`. The component initializer itself stops at the first registration failure.
 
-There is no `sqlite3_icuex_init()` loadable-extension entry point. Do not compile `icuex.c` as a separate object or shared library.
+The compiler must see `sqlite3.h` and the ICU headers. The final target must link the ICU internationalization, common, and data libraries. Enabling SQLite's separate ICU extension is optional.
+
+### Loadable-extension mode
+
+Compile the source as a shared library without defining `SQLITE_CORE`. For example, on a Unix-like system with pkg-config:
+
+```sh
+cc -O2 -fPIC -shared icuex.c -o icuex.so \
+  $(pkg-config --cflags --libs icu-i18n icu-uc)
+```
+
+For MSVC with ICU supplied by Conda:
+
+```bat
+cl /nologo /O2 /LD ^
+  /I"C:\path\to\sqlite-amalgamation" ^
+  /I"%CONDA_PREFIX%\Library\include" ^
+  icuex.c ^
+  /link /LIBPATH:"%CONDA_PREFIX%\Library\lib" ^
+  icuin.lib icuuc.lib icudt.lib /OUT:icuex.dll
+```
+
+Matching ICU DLLs must be discoverable at runtime. Load the resulting library through SQLite's normal extension interface:
+
+```sql
+.load ./icuex
+```
+
+The basename `icuex` maps to the exported `sqlite3_icuex_init()` entry point. The loadable build uses `sqlite3ext.h` and SQLite's supplied API table; it does not need to link directly against the SQLite library.
 
 ## 4. Memory and ownership
 
 - `UTF_CI` owns one `UCollator`; `UTF_CI_AI` owns no persistent ICU object.
-- After successful registration of `UTF_CI`, SQLite owns the collator and closes it through the upstream `icuCollationDel()` callback.
+- After successful registration of `UTF_CI`, SQLite owns the collator and closes it through the private `icuexIcuCollationDelete()` callback.
 - If registration fails, `icuex` closes the untransferred collator directly.
 - `UTF_CI_AI` constructs two temporary UTF-16 keys for each comparison and releases both on every path. It uses explicit lengths, so embedded U+0000 is compared as ordinary text rather than as a terminator.
 - SQLite collation callbacks cannot return SQL errors. If key allocation or ICU processing fails, `UTF_CI_AI` logs the failure, interrupts the active database operation, cleans up, and returns a provisional explicit-length comparison only to satisfy the callback ABI.
@@ -184,7 +199,9 @@ REINDEX;
 
 ## 6. Testing
 
-The test suite uses only Python's standard `sqlite3` module and SQL. That Python module must already be linked against the custom SQLite library containing ICU, `icuex`, and the external aggregate initializer.
+The test suite uses Python's standard `sqlite3` module and exercises behavior through SQL. It supports both integration modes.
+
+For a built-in build, use the Python module linked to that custom SQLite and run without setup:
 
 Install pytest in the active environment and run:
 
@@ -192,27 +209,41 @@ Install pytest in the active environment and run:
 python -m pytest
 ```
 
+For a loadable build, specify the shared library. On Windows CMD:
+
+```bat
+set "ICUEX_EXTENSION=B:\path\to\icuex.dll"
+python -m pytest
+```
+
+On a Unix-like system:
+
+```sh
+ICUEX_EXTENSION=/path/to/icuex.so python -m pytest
+```
+
+The fixture loads the configured library into every fresh connection and then disables further extension loading on that connection.
+
 The tests deliberately do not:
 
-- Load an extension.
 - Execute `icu_load_collation()` as setup.
 - Register functions or collations from Python.
 - Use `ctypes`, CFFI, or compiled C test fixtures.
 - Call private C helpers.
 
-`PRAGMA collation_list` and `PRAGMA function_list` verify automatic registration, arities, preferred encoding, and flags. Behavioral modules cover collations, normalization modes, strict SQL types, embedded NUL, long input, indexes, generated columns, and reopening file-backed databases.
+`PRAGMA collation_list` and `PRAGMA function_list` verify registration, arities, preferred encoding, and flags. Behavioral modules cover collations, normalization modes, strict SQL types, embedded NUL, long input, indexes, generated columns, and reopening file-backed databases.
 
 ## 7. Files
 
 ```text
-icuex.c                          implementation
-README.md                        usage and integration guide
-pyproject.toml                   pytest configuration
-tests/conftest.py                connection fixtures without setup SQL
-tests/test_introspection.py      automatic-registration checks
-tests/test_collations.py         collation behavior
-tests/test_casefold.py           Unicode default case folding
-tests/test_normalization_*.py    standard and composite normalization
-tests/test_sql_contract.py       NULL, type, mode, and length contracts
+icuex.c                         implementation
+README.md                       usage and integration guide
+pyproject.toml                  pytest configuration
+tests/conftest.py               built-in/loadable connection fixtures
+tests/test_introspection.py     per-connection registration checks
+tests/test_collations.py        collation behavior
+tests/test_casefold.py          Unicode default case folding
+tests/test_normalization_*.py   standard and composite normalization
+tests/test_sql_contract.py      NULL, type, mode, and length contracts
 tests/test_schema_integration.py schema, index, and reopen behavior
 ```

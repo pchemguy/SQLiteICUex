@@ -10,22 +10,20 @@
 **
 ******************************************************************************
 **
-** ICU-backed collations and Unicode normalization for a custom SQLite
-** amalgamation.
+** ICU-backed collations and Unicode normalization for SQLite.
 **
-** This file is deliberately not a loadable SQLite extension.  The amalgamation
-** generator must place ext/icu/icu.c before this file in the same translation
-** unit and must define SQLITE_CORE, SQLITE_ENABLE_ICU, and
-** SQLITE_ENABLE_ICUEX.  That arrangement allows this module to reuse the
-** private icuCollationColl(), icuCollationDel(), and icuFunctionError()
-** routines from the upstream SQLite ICU extension without modifying icu.c.
-** The first collation reuses the upstream comparison implementation.  The
-** second deliberately implements different normalized-key semantics.
+** This file is deliberately independent of SQLite's ext/icu/icu.c.  It uses
+** only the public SQLite and ICU APIs and owns all comparison, destruction,
+** transformation, and error-reporting callbacks that it registers.
 **
-** The surrounding build system is responsible for invoking
-** sqlite3IcuexInit() from its aggregate built-in-extension initializer.  This
-** file neither defines that aggregate initializer nor calls
-** sqlite3_auto_extension().
+** When compiled with SQLITE_CORE, a surrounding built-in-extension
+** initializer calls sqlite3IcuexInit() for each new connection.  Otherwise
+** this source builds as a conventional loadable extension exporting
+** sqlite3_icuex_init().
+**
+** In built-in mode, the surrounding build system is responsible for invoking
+** sqlite3IcuexInit() from its aggregate initializer.  This file neither
+** defines that aggregate initializer nor calls sqlite3_auto_extension().
 **
 ** SQL surface:
 **
@@ -39,16 +37,11 @@
 ** using explicit lengths throughout.
 */
 
-#if !defined(SQLITE_CORE)
-# error "icuex.c must be compiled inside the SQLite amalgamation"
-#endif
-
-#if !defined(SQLITE_ENABLE_ICU)
-# error "icuex.c requires ext/icu/icu.c with SQLITE_ENABLE_ICU"
-#endif
-
-#if !defined(SQLITE_ENABLE_ICUEX)
-# error "icuex.c requires SQLITE_ENABLE_ICUEX"
+#ifndef SQLITE_CORE
+# include "sqlite3ext.h"
+  SQLITE_EXTENSION_INIT1
+#else
+# include "sqlite3.h"
 #endif
 
 #include <assert.h>
@@ -56,6 +49,7 @@
 #include <string.h>
 
 #include <unicode/uchar.h>
+#include <unicode/ucol.h>
 #include <unicode/unorm2.h>
 #include <unicode/ustring.h>
 #include <unicode/utf16.h>
@@ -96,6 +90,62 @@ typedef enum IcuexKeyResult {
   ICUEX_KEY_ICU,
   ICUEX_KEY_LENGTH
 } IcuexKeyResult;
+
+/*
+** Report an ICU failure from an SQL scalar-function callback.
+**
+** zFunction is a static operation name supplied by this module.  ICU owns the
+** string returned by u_errorName().  A fixed stack buffer avoids introducing
+** an allocation-failure path while constructing the diagnostic; SQLite's
+** snprintf implementation always terminates the result.
+*/
+static void icuexFunctionError(
+  sqlite3_context *pCtx,
+  const char *zFunction,
+  UErrorCode status
+){
+  char zMessage[160];
+  sqlite3_snprintf(
+      (int)sizeof(zMessage),
+      zMessage,
+      "ICU error: %s(): %s",
+      zFunction,
+      u_errorName(status)
+  );
+  sqlite3_result_error(pCtx, zMessage, -1);
+}
+
+/*
+** Compare explicitly sized native-endian UTF-16 strings with one UCollator.
+**
+** SQLite supplies byte lengths, while ucol_strcoll() accepts UTF-16 code-unit
+** lengths.  SQLite's UTF-16 collation contract guarantees complete two-byte
+** code units.  Embedded U+0000 is ordinary data because both lengths remain
+** explicit.
+*/
+static int icuexIcuCollation(
+  void *pContext,
+  int nLeftByte,
+  const void *pLeft,
+  int nRightByte,
+  const void *pRight
+){
+  UCollationResult result = ucol_strcoll(
+      (const UCollator *)pContext,
+      (const UChar *)pLeft,
+      (int32_t)(nLeftByte / (int)sizeof(UChar)),
+      (const UChar *)pRight,
+      (int32_t)(nRightByte / (int)sizeof(UChar))
+  );
+  if( result==UCOL_LESS ) return -1;
+  if( result==UCOL_GREATER ) return 1;
+  return 0;
+}
+
+/* Close the UCollator whose ownership SQLite accepted at registration. */
+static void icuexIcuCollationDelete(void *pContext){
+  ucol_close((UCollator *)pContext);
+}
 
 /*
 ** Report that a named SQL argument must be TEXT or NULL.
@@ -320,7 +370,7 @@ static int icuexNormalizeUtf16(
       pNormalizer, zInput, nInput, 0, 0, &status
   );
   if( status!=U_BUFFER_OVERFLOW_ERROR && U_FAILURE(status) ){
-    icuFunctionError(pCtx, "unorm2_normalize", status);
+    icuexFunctionError(pCtx, "unorm2_normalize", status);
     return 0;
   }
   zResult = icuexAllocateUtf16(pCtx, nRequired);
@@ -332,7 +382,7 @@ static int icuexNormalizeUtf16(
   );
   if( U_FAILURE(status) ){
     sqlite3_free(zResult);
-    icuFunctionError(pCtx, "unorm2_normalize", status);
+    icuexFunctionError(pCtx, "unorm2_normalize", status);
     return 0;
   }
   if( nWritten<0 || nWritten>nRequired ){
@@ -368,7 +418,7 @@ static int icuexCasefoldUtf16(
       0, 0, zInput, nInput, U_FOLD_CASE_DEFAULT, &status
   );
   if( status!=U_BUFFER_OVERFLOW_ERROR && U_FAILURE(status) ){
-    icuFunctionError(pCtx, "u_strFoldCase", status);
+    icuexFunctionError(pCtx, "u_strFoldCase", status);
     return 0;
   }
   zResult = icuexAllocateUtf16(pCtx, nRequired);
@@ -381,7 +431,7 @@ static int icuexCasefoldUtf16(
   );
   if( U_FAILURE(status) ){
     sqlite3_free(zResult);
-    icuFunctionError(pCtx, "u_strFoldCase", status);
+    icuexFunctionError(pCtx, "u_strFoldCase", status);
     return 0;
   }
   if( nWritten<0 || nWritten>nRequired ){
@@ -724,7 +774,7 @@ static void icuexReturnText(
   u_strToUTF8(0, 0, &nRequired, zResult, nResult, &status);
   if( status!=U_BUFFER_OVERFLOW_ERROR && U_FAILURE(status) ){
     sqlite3_free(zResult);
-    icuFunctionError(pCtx, "u_strToUTF8", status);
+    icuexFunctionError(pCtx, "u_strToUTF8", status);
     return;
   }
   nLimit = sqlite3_limit(
@@ -749,7 +799,7 @@ static void icuexReturnText(
   sqlite3_free(zResult);
   if( U_FAILURE(status) ){
     sqlite3_free(zUtf8);
-    icuFunctionError(pCtx, "u_strToUTF8", status);
+    icuexFunctionError(pCtx, "u_strToUTF8", status);
     return;
   }
   if( nWritten<0 || nWritten>nRequired ){
@@ -871,7 +921,7 @@ static void icuexNormalizeFunc(
     pNormalizer = icuexGetNormalizer(mode, &status);
     if( U_FAILURE(status) || pNormalizer==0 ){
       if( U_SUCCESS(status) ) status = U_INTERNAL_PROGRAM_ERROR;
-      icuFunctionError(pCtx, "unorm2_getInstance", status);
+      icuexFunctionError(pCtx, "unorm2_getInstance", status);
       return;
     }
     if( !icuexNormalizeUtf16(
@@ -894,7 +944,7 @@ static void icuexNormalizeFunc(
       return;
     }
     if( result==ICUEX_KEY_ICU ){
-      icuFunctionError(pCtx, "NFKD_CF_STRIP", status);
+      icuexFunctionError(pCtx, "NFKD_CF_STRIP", status);
       return;
     }
     if( result!=ICUEX_KEY_OK ){
@@ -939,8 +989,8 @@ static int icuexRegisterIcuCollation(
       zName,
       SQLITE_UTF16,
       (void *)pCollator,
-      icuCollationColl,
-      icuCollationDel
+      icuexIcuCollation,
+      icuexIcuCollationDelete
   );
   if( rc!=SQLITE_OK ) ucol_close(pCollator);
   return rc;
@@ -985,12 +1035,33 @@ static int icuexRegister(sqlite3 *db){
 }
 
 /*
-** Internal amalgamation component initializer.
+** Expose exactly the initializer appropriate to the selected build mode.
 **
-** The separately generated aggregate initializer calls this function for each
-** new database connection when icuex is enabled.  This is intentionally not a
-** three-argument loadable-extension entry point.
+** SQLITE_CORE builds are registered by the surrounding built-in aggregate
+** initializer.  Loadable builds initialize SQLite's extension API table and
+** are called by sqlite3_load_extension().  Both paths return the first
+** registration failure from icuexRegister(); neither performs global
+** registration or owns the database connection.
 */
-int sqlite3IcuexInit(sqlite3 *db){
-  return icuexRegister(db);
+#ifdef SQLITE_CORE
+
+int sqlite3IcuexInit(sqlite3 *db) {
+    return icuexRegister(db);
 }
+
+#else
+
+# if defined(_WIN32)
+__declspec(dllexport)
+# endif
+int sqlite3_icuex_init(
+    sqlite3 *db,
+    char **pzErrMsg,
+    const sqlite3_api_routines *pApi
+) {
+    SQLITE_EXTENSION_INIT2(pApi);
+    (void)pzErrMsg;  /* Unused parameter */
+    return icuexRegister(db);
+}
+
+#endif /* SQLITE_CORE */
