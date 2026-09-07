@@ -21,7 +21,7 @@ All helpers and data authored by `icuex` shall be `static`; standard loader stat
 * With `SQLITE_CORE`, `int sqlite3IcuexInit(sqlite3 *db)` supports built-in integration.
 * Without `SQLITE_CORE`, `int sqlite3_icuex_init(...)` is the conventional loadable-extension entry point and is exported on Windows.
 
-The built-in mechanism that invokes `sqlite3IcuexInit()` automatically is external to `icuex`. The loadable initializer is invoked by SQLite's extension loader. Neither mode performs process-global self-registration.
+In built-in mode, SQLite invokes `sqlite3IcuexInit()` through its `SQLITE_EXTRA_AUTOEXT` built-in-extension hook. The loadable initializer is invoked by SQLite's extension loader. Neither mode performs process-global self-registration.
 
 ### 2. Registration and build-system integration
 
@@ -123,8 +123,7 @@ The exact private helper names may differ, but the registration behavior and ord
 
 `icuex` must not:
 
-* Define or declare `sqlite3ExtraAutoExtInit`.
-* Define or configure `SQLITE_EXTRA_AUTOEXT`.
+* Define `SQLITE_EXTRA_AUTOEXT` within `icuex.c`.
 * Call `sqlite3_auto_extension()`.
 * Register itself through a constructor or process-global side effect.
 * Know which other third-party extensions are included.
@@ -136,25 +135,19 @@ It must also not reference any private definition from `ext/icu/icu.c`.
 
 The surrounding build system is responsible for:
 
-1. Enabling inclusion of `icuex.c`, conventionally through:
+1. Starting with SQLite's standard amalgamation.
+2. Placing the contents of `icuex.c`, or an `#include "icuex.c"` directive, after `sqlite3.c` in the same translation unit.
+3. Building that translation unit with `SQLITE_CORE`, which the standard amalgamation already defines for itself.
+4. Supplying this compiler definition:
 
    ```text
-   SQLITE_ENABLE_ICUEX
+   SQLITE_EXTRA_AUTOEXT=sqlite3IcuexInit
    ```
 
-2. Defining `SQLITE_CORE` while compiling `icuex.c`, whether it is included in an amalgamation translation unit or compiled as a separate object.
-3. Providing the ICU headers and linking the ICU internationalization, common, and data libraries required by the selected ICU build.
-4. Generating a separate aggregate-initializer module that invokes the component initializers for all included third-party extensions.
-5. Calling `sqlite3IcuexInit(db)` from that generated aggregate initializer when `icuex` is enabled.
-6. Configuring SQLite so that the aggregate initializer is invoked for every new connection, conventionally through:
+5. Providing ICU headers and linking the ICU internationalization, common, and data libraries required by the selected ICU build.
 
-   ```text
-   SQLITE_EXTRA_AUTOEXT=sqlite3ExtraAutoExtInit
-   ```
-
-7. Propagating any non-`SQLITE_OK` result returned by `sqlite3IcuexInit()`.
-
-The name, implementation, generation, and extension ordering of `sqlite3ExtraAutoExtInit()` are outside the `icuex` source contract.
+With `SQLITE_EXTRA_AUTOEXT` defined, standard SQLite declares the selected function with signature `int (sqlite3*)`, places it in its built-in-extension initializer array, calls it for every new connection, and propagates a non-
+`SQLITE_OK` result. No additional initializer module, direct `sqlite3_auto_extension()` call, or SQLite source modification other than appending `icuex.c` is required.
 
 `ext/icu/icu.c` may independently be included when its own SQL API is wanted, but it is neither a prerequisite nor a provider of implementation details for `icuex`.
 
@@ -173,7 +166,7 @@ str_casefold(...)
 str_normalize(...)
 ```
 
-Each initializer must return `SQLITE_OK` only if every `icuex` collation and function was registered successfully. Otherwise it must return the first non-`SQLITE_OK` registration result. The external aggregate initializer propagates the built-in result; SQLite's extension loader propagates the loadable result.
+Each initializer must return `SQLITE_OK` only if every `icuex` collation and function was registered successfully. Otherwise it must return the first non-`SQLITE_OK` registration result. SQLite's built-in-extension machinery propagates the built-in result; SQLite's extension loader propagates the loadable result.
 
 Neither mode requires `icu_load_collation()` or SQL initialization. Resources directly owned by a failing registration operation must be released.
 
@@ -499,7 +492,7 @@ Python test modules, fixtures, and helpers must have corresponding professional 
 Generate `README.md` containing:
 
 * Purpose and features.
-* Built-in, separate-object, and loadable-extension build requirements.
+* Standard-amalgamation built-in and loadable-extension build requirements.
 * Automatic built-in initialization and explicit loadable initialization.
 * Complete SQL API reference.
 * The distinct definitions of `UTF_CI` and `UTF_CI_AI`.
@@ -514,7 +507,7 @@ Generate `README.md` containing:
 
 Testing shall use Python's configured `sqlite3` module and SQL. The same behavioral suite shall support two modes:
 
-* With no test environment override, Python's SQLite library is assumed to contain built-in `icuex` and its automatic aggregate initializer.
+* With no test environment override, Python's SQLite library is assumed to contain built-in `icuex` registered through `SQLITE_EXTRA_AUTOEXT`.
 * When `ICUEX_EXTENSION` names the compiled shared library, each fresh test connection shall enable extension loading, load that library, and disable further extension loading before yielding the connection.
 
 Tests must not:
@@ -558,7 +551,8 @@ Verify:
 * Scalar-function type.
 * UTF-8 preferred encoding.
 * Presence of `SQLITE_DETERMINISTIC` and `SQLITE_INNOCUOUS`.
-* Absence of `SQLITE_DIRECTONLY`, `SQLITE_SUBTYPE`, and `SQLITE_RESULT_SUBTYPE`.
+* Absence of `SQLITE_DIRECTONLY`, `SQLITE_SUBTYPE`, and
+  `SQLITE_RESULT_SUBTYPE`.
 
 Repeat introspection using multiple simultaneous in-memory connections, a newly opened file-backed connection, and a closed and reopened file-backed database. In loadable mode the library must be loaded into each connection; in built-in mode no setup is permitted.
 
@@ -622,11 +616,12 @@ Implementation is complete only when:
 
 1. Direct invocation of `sqlite3IcuexInit(db)` registers both collations and both functions on that connection or returns the first registration failure.
 2. Loading the independently compiled shared library invokes `sqlite3_icuex_init()` and registers the same SQL surface.
-3. In the completed built-in build, plain `sqlite3.connect(...)` immediately exposes all four SQL features because the external build-generated aggregate initializer invokes `sqlite3IcuexInit()`.
+3. In the completed built-in build, plain `sqlite3.connect(...)` immediately exposes all four SQL features because SQLite's `SQLITE_EXTRA_AUTOEXT` hook invokes `sqlite3IcuexInit()`.
 4. `icuex.c` compiles independently in both modes using public SQLite and ICU headers and has no dependency on `ext/icu/icu.c`.
-5. `icuex.c` neither defines nor depends on the identity or implementation of the aggregate initializer and performs no process-global self-registration.
+5. `icuex.c` does not define `SQLITE_EXTRA_AUTOEXT`, call `sqlite3_auto_extension()`, or perform process-global self-registration.
 6. `UTF_CI` implements ICU root secondary-strength collation.
-7. `UTF_CI_AI` compares exact `NFKD_CF_STRIP` keys and makes `ЙЁ` equivalent to `ие`.
+7. `UTF_CI_AI` compares exact `NFKD_CF_STRIP` keys and makes `ЙЁ` equivalent
+   to `ие`.
 8. All functionality is verified exclusively through SQL executed by pytest.
 9. All specified Unicode transformations and collation examples pass.
 10. Embedded U+0000 and supplementary characters are preserved.

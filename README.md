@@ -6,7 +6,7 @@ url: https://chatgpt.com/c/6a9cf257-d748-83eb-93ad-1f1a3999eb9a
 
 `icuex` adds two ICU-backed Unicode collations and two Unicode transformation functions to SQLite. The same source supports two build modes:
 
-- With `SQLITE_CORE`, it is a built-in component registered for each new connection by the surrounding build's aggregate initializer.
+- With `SQLITE_CORE`, it is a built-in component registered for each new connection through SQLite's `SQLITE_EXTRA_AUTOEXT` hook.
 - Without `SQLITE_CORE`, it is a conventional loadable extension exporting `sqlite3_icuex_init()`.
 
 `icuex.c` uses only public SQLite and ICU APIs. It is completely independent of SQLite's `ext/icu/icu.c`; that extension may be enabled separately but is not a build or source-order prerequisite. The supported data interface is SQL.
@@ -122,7 +122,19 @@ Inputs are expected to contain well-formed Unicode. Deliberately malformed SQLit
 
 ### Built-in mode
 
-Compile `icuex.c` with `SQLITE_CORE` defined. It may be included in a custom amalgamation translation unit or compiled as a separate object and linked into the same library or executable. No ordering relative to `ext/icu/icu.c` is required.
+Download SQLite's standard amalgamation, place `icuex.c` after `sqlite3.c` in the same translation unit, and define:
+
+```text
+SQLITE_EXTRA_AUTOEXT=sqlite3IcuexInit
+```
+
+The source can be placed after the amalgamation text directly or included at the end of `sqlite3.c`:
+
+```c
+#include "icuex.c"
+```
+
+The standard amalgamation already builds with `SQLITE_CORE`. SQLite declares the named function as `int sqlite3IcuexInit(sqlite3*)`, adds it to its built-in extension list, and invokes it for every new connection. No additional initializer source, generated registration module, or `sqlite3_auto_extension()` call is required.
 
 Built-in mode provides this component initializer:
 
@@ -130,18 +142,17 @@ Built-in mode provides this component initializer:
 int sqlite3IcuexInit(sqlite3 *db);
 ```
 
-The surrounding build system must generate a separate aggregate-initializer module that calls `sqlite3IcuexInit(db)` when `icuex` is enabled. The build may conventionally use `SQLITE_ENABLE_ICUEX` to select the source and configure
-SQLite with:
+For example, on a Unix-like system with pkg-config:
 
-```text
-SQLITE_EXTRA_AUTOEXT=sqlite3ExtraAutoExtInit
+```sh
+cc -O2 \
+  -DSQLITE_EXTRA_AUTOEXT=sqlite3IcuexInit \
+  shell.c sqlite3.c -o sqlite3 \
+  $(pkg-config --cflags --libs icu-i18n icu-uc) \
+  -ldl -lpthread -lm
 ```
 
-The name, implementation, generation, and ordering logic of `sqlite3ExtraAutoExtInit()` are outside this package. `icuex.c` neither defines nor references that function and does not call `sqlite3_auto_extension()`.
-
-The aggregate initializer must propagate a non-`SQLITE_OK` result from `sqlite3IcuexInit()`. The component initializer itself stops at the first registration failure.
-
-The compiler must see `sqlite3.h` and the ICU headers. The final target must link the ICU internationalization, common, and data libraries. Enabling SQLite's separate ICU extension is optional.
+The compiler must see the ICU headers, and the final target must link the ICU internationalization, common, and data libraries. Enabling SQLite's separate ICU extension is optional and imposes no source-order requirement relative to `icuex.c`.
 
 ### Loadable-extension mode
 
@@ -174,7 +185,7 @@ The basename `icuex` maps to the exported `sqlite3_icuex_init()` entry point. Th
 ## 4. Memory and ownership
 
 - `UTF_CI` owns one `UCollator`; `UTF_CI_AI` owns no persistent ICU object.
-- After successful registration of `UTF_CI`, SQLite owns the collator and closes it through the private `icuexIcuCollationDelete()` callback.
+- After successful registration of `UTF_CI`, SQLite owns the collator and closes it through the private icuexIcuCollationDelete()` callback.
 - If registration fails, `icuex` closes the untransferred collator directly.
 - `UTF_CI_AI` constructs two temporary UTF-16 keys for each comparison and releases both on every path. It uses explicit lengths, so embedded U+0000 is compared as ordinary text rather than as a terminator.
 - SQLite collation callbacks cannot return SQL errors. If key allocation or ICU processing fails, `UTF_CI_AI` logs the failure, interrupts the active database operation, cleans up, and returns a provisional explicit-length comparison only to satisfy the callback ABI.
