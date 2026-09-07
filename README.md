@@ -27,7 +27,7 @@ SELECT 'и' = 'й' COLLATE UTF_CI;                  -- 0
 SELECT 'ЙЁ' = 'ие' COLLATE UTF_CI_AI;             -- 1
 SELECT 'É' = 'e' COLLATE UTF_CI_AI;               -- 1
 SELECT 'Straße' = 'STRASSE' COLLATE UTF_CI_AI;    -- 1
-SELECT 'Ａ①' = 'a1' COLLATE UTF_CI_AI;             -- 1
+SELECT 'Ａ①' = 'a1' COLLATE UTF_CI_AI;            -- 1
 ```
 
 `UTF_CI` is an ICU root linguistic collation and is not defined as a comparison of `str_casefold()` output. `UTF_CI_AI` has deliberately different semantics: each operand is transformed by NFKC_Casefold, then NFKD, then removal of every code point whose canonical combining class is nonzero. The resulting keys are compared lexicographically by Unicode code point. Thus `UTF_CI_AI` equality is the same as equality of the corresponding `NFKD_CF_STRIP` keys; no original text tiebreaker is applied.
