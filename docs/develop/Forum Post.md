@@ -128,7 +128,7 @@ The source is released into the public domain under [The Unlicense](https://unli
 
 ## 📗 Reddit
 
-**ICUex: predefined ICU collations, Unicode case folding, and normalization for SQLite**
+**ICUex: Unicode collations, case folding, and normalization**
 
 I have published [ICUex](https://github.com/pchemguy/SQLiteICUex), a small ICU-backed public-domain SQLite C extension providing two automatically registered ICU collations, locale-independent full Unicode case folding, and normalization/search-key functions. It can be loaded dynamically or linked statically and is designed to complement the official SQLite ICU extension.
 
