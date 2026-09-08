@@ -7,6 +7,24 @@ import sqlite3
 import pytest
 
 
+CASEFOLD_DIVERGENCES = [
+    pytest.param("Straße", "strasse", "straße", id="sharp-s-in-word"),
+    pytest.param("ß", "ss", "ß", id="sharp-s"),
+    pytest.param("ẞ", "ss", "ß", id="capital-sharp-s"),
+    pytest.param("ΟΣ", "οσ", "ος", id="contextual-final-sigma"),
+    pytest.param("ς", "σ", "ς", id="final-sigma"),
+    pytest.param("ſ", "s", "ſ", id="long-s"),
+    pytest.param("ﬀ", "ff", "ﬀ", id="ligature-ff"),
+    pytest.param("ﬁ", "fi", "ﬁ", id="ligature-fi"),
+    pytest.param("ﬂ", "fl", "ﬂ", id="ligature-fl"),
+    pytest.param("ﬃ", "ffi", "ﬃ", id="ligature-ffi"),
+    pytest.param("ﬄ", "ffl", "ﬄ", id="ligature-ffl"),
+    pytest.param("ﬅ", "st", "ﬅ", id="ligature-long-s-t"),
+    pytest.param("ﬆ", "st", "ﬆ", id="ligature-st"),
+    pytest.param("ŉ", "ʼn", "ŉ", id="apostrophe-n-expansion"),
+]
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
@@ -16,6 +34,7 @@ import pytest
         ("ЁЙ", "ёй"),
         ("Σσς", "σσσ"),
         ("ﬀ", "ff"),
+        ("ИЙЕЁЬЪ", "ийеёьъ"),
         ("\ufeffA", "\ufeffa"),
         ("😀", "😀"),
     ],
@@ -28,6 +47,22 @@ def test_casefold_examples(
     assert db.execute(
         "SELECT str_casefold(?)", (source,)
     ).fetchone()[0] == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_fold", "expected_lower"), CASEFOLD_DIVERGENCES
+)
+def test_casefold_differs_from_lowercase_mappings(
+    db: sqlite3.Connection,
+    source: str,
+    expected_fold: str,
+    expected_lower: str,
+) -> None:
+    """Assert both the full-fold result and its expected lowercase contrast."""
+
+    folded = db.execute("SELECT str_casefold(?)", (source,)).fetchone()[0]
+    assert folded == expected_fold
+    assert folded != expected_lower
 
 
 def test_casefold_does_not_normalize(db: sqlite3.Connection) -> None:

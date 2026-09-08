@@ -14,7 +14,7 @@ Implement `icuex`, a dual built-in/loadable SQLite extension providing:
 
 Its complete supported user-facing interface is SQL. The conditional C initializers are integration entry points rather than an additional data API.
 
-`icuex.c` shall be completely independent of SQLite's `ext/icu/icu.c`. It must use only public SQLite and ICU APIs and must own every callback and helper that it registers. Building or enabling `ext/icu/icu.c` is optional; no source ordering, same-translation-unit arrangement, private declaration, or private symbol from that extension is permitted.
+`icuex` shall complement rather than reproduce the SQL surface of SQLite's `ext/icu/icu.c`. It implements focused features not readily provided there: predefined per-connection collations, full Unicode case folding, normalization, and normalized search-key generation. The source must use public SQLite and ICU APIs and own every callback and helper that it registers. Building or enabling `ext/icu/icu.c` is optional; no source ordering, same-translation-unit arrangement, private declaration, or private symbol from that extension is permitted.
 
 All helpers and data authored by `icuex` shall be `static`; standard loader state emitted by `SQLITE_EXTENSION_INIT1` is exempt. Exactly one non-static initializer is compiled in each mode:
 
@@ -146,8 +146,7 @@ The surrounding build system is responsible for:
 
 5. Providing ICU headers and linking the ICU internationalization, common, and data libraries required by the selected ICU build.
 
-With `SQLITE_EXTRA_AUTOEXT` defined, standard SQLite declares the selected function with signature `int (sqlite3*)`, places it in its built-in-extension initializer array, calls it for every new connection, and propagates a non-
-`SQLITE_OK` result. No additional initializer module, direct `sqlite3_auto_extension()` call, or SQLite source modification other than appending `icuex.c` is required.
+With `SQLITE_EXTRA_AUTOEXT` defined, standard SQLite declares the selected function with signature `int (sqlite3*)`, places it in its built-in-extension initializer array, calls it for every new connection, and propagates a non-`SQLITE_OK` result. No additional initializer module, direct `sqlite3_auto_extension()` call, or SQLite source modification other than appending `icuex.c` is required.
 
 `ext/icu/icu.c` may independently be included when its own SQL API is wanted, but it is neither a prerequisite nor a provider of implementation details for `icuex`.
 
@@ -314,9 +313,13 @@ Straße -> strasse
 Σ      -> σ
 σ      -> σ
 ς      -> σ
+ﬀ      -> ff
+ſ      -> s
 ```
 
 Results depend on the Unicode data version provided by the linked ICU library.
+
+`str_casefold()` is not an alias for the overloaded `lower()` supplied when SQLite is separately built with `ext/icu/icu.c`. That function uses `u_strToLower()` and provides locale-sensitive, context-sensitive lowercase mapping; `str_casefold()` uses locale-independent full default case folding for caseless matching. The operations commonly agree, including for Cyrillic `ИЙЕЁЬЪ -> ийеёьъ`, but must remain observably distinct for stable cases such as `Straße`, `ß`/`ẞ`, Greek final sigma, long s, and Latin compatibility ligatures. `str_casefold()` must not acquire locale-dependent behavior merely to agree with `lower()`.
 
 ### 5. `str_normalize(text, kind)`
 
@@ -471,7 +474,8 @@ Mutable global caches are unnecessary. Calling ICU's normalizer-instance getters
 `icuex.c` must contain professional documentation comments covering:
 
 * Module purpose and integration constraints.
-* Complete independence from `ext/icu/icu.c` and use of public APIs only.
+* Its complementary relationship to `ext/icu/icu.c`, its non-duplication of
+  that extension's SQL surface, and its use of public APIs only.
 * Conditional built-in and loadable-extension initialization.
 * The different implementations and semantics of the two collations.
 * Why ICU root primary strength does not implement `UTF_CI_AI`.
@@ -551,8 +555,7 @@ Verify:
 * Scalar-function type.
 * UTF-8 preferred encoding.
 * Presence of `SQLITE_DETERMINISTIC` and `SQLITE_INNOCUOUS`.
-* Absence of `SQLITE_DIRECTONLY`, `SQLITE_SUBTYPE`, and
-  `SQLITE_RESULT_SUBTYPE`.
+* Absence of `SQLITE_DIRECTONLY`, `SQLITE_SUBTYPE`, and `SQLITE_RESULT_SUBTYPE`.
 
 Repeat introspection using multiple simultaneous in-memory connections, a newly opened file-backed connection, and a closed and reopened file-backed database. In loadable mode the library must be loaded into each connection; in built-in mode no setup is permitted.
 
@@ -562,7 +565,9 @@ Include focused tests for:
 
 * ASCII and empty strings.
 * Latin, Greek, and Cyrillic case folding.
-* Multi-code-point folding expansions.
+* Multi-code-point folding expansions, including sharp s and the stable Latin presentation-form ligatures.
+* Hard equality and inequality assertions distinguishing full case folding from lowercase mapping for `Straße`, `ß`/`ẞ`, Greek contextual/final sigma, long s, and compatibility ligatures.
+* The same focused special-case corpus, plus Cyrillic `ИЙЕЁЬЪ`, through every supported normalization mode: `NFC`, `NFD`, `NFKC`, `NFKD`, `NFKC_CF`, and `NFKD_CF_STRIP`.
 * NFC/NFD composition and decomposition.
 * NFKC/NFKD compatibility characters.
 * Precomposed and decomposed accents.
@@ -580,6 +585,8 @@ Include focused tests for:
 * `typeof(result) = 'text'`.
 
 Use established Unicode characters whose behavior is stable across supported ICU versions. Do not compare the complete implementation against Python's `unicodedata` or `str.casefold()`, because Python and ICU may use different Unicode versions.
+
+When `ext/icu/icu.c` is present, separately probe its two-argument `lower(text, 'root')` overload over the same corpus. Those tests document and compare another SQLite extension; they are not acceptance tests for `icuex`. They shall contain explicit expected equality and inequality assertions, but shall catch an unavailable overload or assertion mismatch and issue a clear pytest warning identifying `ext/icu/icu.c` instead of failing the `icuex` suite. Assertions concerning `str_casefold()` and `str_normalize()` remain ordinary hard failures.
 
 #### Collation integration
 
@@ -615,13 +622,12 @@ verify both functions in schema contexts requiring deterministic and innocuous f
 Implementation is complete only when:
 
 1. Direct invocation of `sqlite3IcuexInit(db)` registers both collations and both functions on that connection or returns the first registration failure.
-2. Loading the independently compiled shared library invokes `sqlite3_icuex_init()` and registers the same SQL surface.
+2. Loading the separately compiled shared library invokes `sqlite3_icuex_init()` and registers the same SQL surface.
 3. In the completed built-in build, plain `sqlite3.connect(...)` immediately exposes all four SQL features because SQLite's `SQLITE_EXTRA_AUTOEXT` hook invokes `sqlite3IcuexInit()`.
-4. `icuex.c` compiles independently in both modes using public SQLite and ICU headers and has no dependency on `ext/icu/icu.c`.
+4. `icuex.c` compiles as its own source in both modes using public SQLite and ICU headers and has no dependency on `ext/icu/icu.c`.
 5. `icuex.c` does not define `SQLITE_EXTRA_AUTOEXT`, call `sqlite3_auto_extension()`, or perform process-global self-registration.
 6. `UTF_CI` implements ICU root secondary-strength collation.
-7. `UTF_CI_AI` compares exact `NFKD_CF_STRIP` keys and makes `ЙЁ` equivalent
-   to `ие`.
+7. `UTF_CI_AI` compares exact `NFKD_CF_STRIP` keys and makes `ЙЁ` equivalent to `ие`.
 8. All functionality is verified exclusively through SQL executed by pytest.
 9. All specified Unicode transformations and collation examples pass.
 10. Embedded U+0000 and supplementary characters are preserved.

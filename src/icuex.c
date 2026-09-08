@@ -12,18 +12,24 @@
 **
 ** ICU-backed collations and Unicode normalization for SQLite.
 **
-** This file is deliberately independent of SQLite's ext/icu/icu.c.  It uses
-** only the public SQLite and ICU APIs and owns all comparison, destruction,
-** transformation, and error-reporting callbacks that it registers.
+** icuex does not replicate the SQL functionality of SQLite's ext/icu/icu.c.
+** It implements a focused complementary surface not readily available from
+** that extension: two predefined collations available immediately on an
+** initialized connection, full Unicode case folding, Unicode normalization,
+** and normalized search-key generation.
 **
-** When compiled with SQLITE_CORE, a surrounding built-in-extension
-** initializer calls sqlite3IcuexInit() for each new connection.  Otherwise
-** this source builds as a conventional loadable extension exporting
-** sqlite3_icuex_init().
+** In particular, ext/icu/icu.c overloads lower() with ICU u_strToLower(),
+** which is a locale-sensitive, context-sensitive lowercase mapping.  The
+** str_casefold() function below instead uses locale-independent full Unicode
+** case folding for caseless matching.  The operations agree for ordinary
+** letters but intentionally differ for such text as German sharp s, Greek
+** final sigma, long s, and compatibility ligatures.
 **
-** In built-in mode, the surrounding build system is responsible for invoking
-** sqlite3IcuexInit() from its aggregate initializer.  This file neither
-** defines that aggregate initializer nor calls sqlite3_auto_extension().
+** The source supports two build modes.  With SQLITE_CORE it provides
+** sqlite3IcuexInit() for static integration through SQLite's
+** SQLITE_EXTRA_AUTOEXT mechanism.  Without SQLITE_CORE it builds as a
+** conventional loadable extension exporting sqlite3_icuex_init().  Neither
+** mode performs process-global self-registration.
 **
 ** SQL surface:
 **
@@ -1037,11 +1043,12 @@ static int icuexRegister(sqlite3 *db){
 /*
 ** Expose exactly the initializer appropriate to the selected build mode.
 **
-** SQLITE_CORE builds are registered by the surrounding built-in aggregate
-** initializer.  Loadable builds initialize SQLite's extension API table and
-** are called by sqlite3_load_extension().  Both paths return the first
-** registration failure from icuexRegister(); neither performs global
-** registration or owns the database connection.
+** SQLITE_CORE builds are registered through SQLite's built-in-extension list
+** when the build defines SQLITE_EXTRA_AUTOEXT=sqlite3IcuexInit.  Loadable
+** builds initialize SQLite's extension API table and are called by
+** sqlite3_load_extension().  Both paths return the first registration failure
+** from icuexRegister(); neither performs global registration or owns the
+** database connection.
 */
 #ifdef SQLITE_CORE
 
