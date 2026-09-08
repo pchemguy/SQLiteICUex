@@ -300,7 +300,7 @@ if not defined USE_ICU       (set "USE_ICU=1")
 if not "%USE_ICU%"=="1"      (set "USE_ICU_CONDA=0")
 if not defined USE_ZLIB      (set "USE_ZLIB=1")
 if not defined SQLITE_EXTRA  (set "SQLITE_EXTRA=1")
-if not defined USE_TEST      (set "USE_TEST=1")
+if not defined USE_TEST      (set "USE_TEST=0")
 if not defined USE_FP16      (set "USE_FP16=1")
 if not defined USE_EXTRAS    (set "USE_EXTRAS=1")
 
