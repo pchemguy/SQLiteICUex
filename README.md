@@ -56,13 +56,19 @@ CREATE INDEX terms_by_name ON terms(term COLLATE UTF_CI);
 
 ### `str_casefold(text)`
 
-`str_casefold()` performs full, locale-independent Unicode default case folding using ICU `u_strFoldCase(..., U_FOLD_CASE_DEFAULT, ...)`. It does not normalize its input or output.
+`str_casefold()` performs full, locale-independent [Unicode Default Case Folding](https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt) using ICU `u_strFoldCase(..., U_FOLD_CASE_DEFAULT, ...)`. It does not perform Unicode normalization before or after folding.
 
 ```sql
 SELECT str_casefold('Straße');  -- strasse
 SELECT str_casefold('ЁЙ');      -- ёй
 SELECT str_casefold('Σσς');     -- σσσ
 ```
+
+This is the same standard operation exposed by Python's `str.casefold()`. It is intended for caseless binary comparison, not for producing linguistically appropriate lowercase text. Full folding handles mappings such as `ß → ss` and unifies Greek sigma forms, while preserving distinctions unrelated to case, including Cyrillic `е/ё` and `и/й`. Its exact behavior follows the Unicode version bundled with ICU. Because case folding does not provide normalization equivalence, callers should normalize separately or use `NFKC_CF` when compatibility-normalized caseless keys are required.
+
+Default case folding is deliberately locale-independent and is not a substitute for locale-sensitive lowercasing or language-specific caseless matching. Locale- and context-sensitive lowercase mappings are documented separately in Unicode's [SpecialCasing.txt](https://www.unicode.org/Public/UCD/latest/ucd/SpecialCasing.txt). Locale-sensitive casing can map an ASCII capital letter to output containing non-ASCII code points. A notable example occurs in Turkish and Azerbaijani: bare ASCII `I` (U+0049) lowercases to dotless `ı` (U+0131), while `İ` lowercases to `i`. Default case folding instead maps `I` to ASCII `i` and `İ` to `i` followed by U+0307 COMBINING DOT ABOVE. Context-sensitive lowercase mappings also exist. For example, Lithuanian lowercasing can add U+0307 after ASCII `I` or `J` when certain accents follow.
+
+Applications requiring language-specific semantics should use locale-aware ICU casing and locale-tailored collations, such as those exposed separately by `ext/icu/icu.c`. `NFKD_CF_STRIP` and `UTF_CI_AI` deliberately provide broader language-neutral matching and should not be used where the linguistic or orthographic distinctions removed by case folding, compatibility decomposition, or combining-mark stripping must be preserved.
 
 #### Relationship to ICU `lower()`
 
@@ -86,16 +92,6 @@ The distinction is observable in stable mappings:
 | Cyrillic `ИЙЕЁЬЪ`         | `ийеёьъ`                            | `ийеёьъ`                 |
 
 Thus ICU `lower()` is not a substitute for `str_casefold()` when the stored value is intended to represent Unicode caseless equivalence. Conversely, `str_casefold()` should not be presented as locale-aware lowercasing. The test suite treats `str_casefold()` as an `icuex` requirement. Tests of the overloaded two-argument `lower()` are compatibility probes for `ext/icu/icu.c`: a missing overload or an unexpected ICU-lowercase result produces an explicit pytest warning, not an `icuex` test failure.
-
-> [!IMPORTANT]  
-> 
-> **Locale-sensitive casing limitation**
-> 
-> `str_casefold()` intentionally performs Unicode default, locale-independent full case folding. It is not a substitute for locale-sensitive lowercasing or language-specific caseless matching.
-> 
-> Locale-sensitive casing can map an ASCII capital letter to output containing non-ASCII code points. A notable example occurs in Turkish and Azerbaijani: bare ASCII `I` lowercases to dotless `ı` (U+0131), while `İ` lowercases to `i`. Default case folding instead maps `I` to ASCII `i` and `İ` to `i` followed by U+0307 COMBINING DOT ABOVE.
-> 
-> Other contextual mappings also exist; for example, Lithuanian lowercasing can add U+0307 after ASCII `I` or `J` when certain accents follow. ICUex does not attempt to enumerate or implement locale-specific casing rules. Applications requiring language-specific semantics should use locale-aware ICU casing and locale-tailored collations, such as those exposed separately by `ext/icu/icu.c`. `NFKD_CF_STRIP` and `UTF_CI_AI` are broad search-key facilities and should not be used where Turkish or Azerbaijani letter distinctions must be preserved.
 
 ### `str_normalize(text, kind)`
 
