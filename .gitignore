@@ -54,6 +54,24 @@ dkms.conf
 # debug information files
 *.dwo
 
+# Entire disposable build workspace
+/build/
+
+# Editor and IDE state
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Python generator cache
+__pycache__/
+*.py[cod]
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -273,5 +291,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Obsidian
 .obsidian
 .trash
