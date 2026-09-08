@@ -87,6 +87,16 @@ The distinction is observable in stable mappings:
 
 Thus ICU `lower()` is not a substitute for `str_casefold()` when the stored value is intended to represent Unicode caseless equivalence. Conversely, `str_casefold()` should not be presented as locale-aware lowercasing. The test suite treats `str_casefold()` as an `icuex` requirement. Tests of the overloaded two-argument `lower()` are compatibility probes for `ext/icu/icu.c`: a missing overload or an unexpected ICU-lowercase result produces an explicit pytest warning, not an `icuex` test failure.
 
+> [!IMPORTANT]  
+> 
+> **Locale-sensitive casing limitation**
+> 
+> `str_casefold()` intentionally performs Unicode default, locale-independent full case folding. It is not a substitute for locale-sensitive lowercasing or language-specific caseless matching.
+> 
+> Locale-sensitive casing can map an ASCII capital letter to output containing non-ASCII code points. A notable example occurs in Turkish and Azerbaijani: bare ASCII `I` lowercases to dotless `ı` (U+0131), while `İ` lowercases to `i`. Default case folding instead maps `I` to ASCII `i` and `İ` to `i` followed by U+0307 COMBINING DOT ABOVE.
+> 
+> Other contextual mappings also exist; for example, Lithuanian lowercasing can add U+0307 after ASCII `I` or `J` when certain accents follow. ICUex does not attempt to enumerate or implement locale-specific casing rules. Applications requiring language-specific semantics should use locale-aware ICU casing and locale-tailored collations, such as those exposed separately by `ext/icu/icu.c`. `NFKD_CF_STRIP` and `UTF_CI_AI` are broad search-key facilities and should not be used where Turkish or Azerbaijani letter distinctions must be preserved.
+
 ### `str_normalize(text, kind)`
 
 The mode is an exact ASCII token matched case-insensitively. Whitespace is not
