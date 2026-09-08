@@ -130,9 +130,9 @@ The source is released into the public domain under [The Unlicense](https://unli
 
 **ICUex: predefined ICU collations, Unicode case folding, and normalization for SQLite**
 
-I have published [ICUex](https://github.com/pchemguy/SQLiteICUex), a small ICU-backed C extension designed to complement SQLite’s `ext/icu/icu.c`. 
+I have published [ICUex](https://github.com/pchemguy/SQLiteICUex), a small ICU-backed public-domain SQLite C extension providing two automatically registered ICU collations, locale-independent full Unicode case folding, and normalization/search-key functions. It can be loaded dynamically or linked statically and is designed to complement the official SQLite ICU extension.
 
-**Feature Highlights**
+**🚀 Feature Highlights**
 
 - automatically registered collations
 - locale-independent full case folding
@@ -141,7 +141,7 @@ I have published [ICUex](https://github.com/pchemguy/SQLiteICUex), a small ICU-b
 - released into the public domain under [The Unlicense](https://unlicense.org)
 - developed with extensive generative-AI assistance ([disclosure](https://github.com/pchemguy/SQLiteICUex/blob/main/AI_DISCLOSURE.md))
 
-**Predefined automatically available collations**
+**⚡ Automatically Registered Collations**
 
 | Collation   | Behavior                                                                                                                                         |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -150,7 +150,7 @@ I have published [ICUex](https://github.com/pchemguy/SQLiteICUex), a small ICU-b
 
 Once ICUex is loaded or statically registered, neither collation requires icu_load_collation(), locale selection, or setup SQL.
 
-**Functions for Unicode case folding and normalization**
+**🧩 Case Folding and Normalization Functions**
 
 | Function                    | Behavior                                       |
 | --------------------------- | ---------------------------------------------- |
