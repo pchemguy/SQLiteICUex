@@ -16,7 +16,7 @@ source-order prerequisite. `icuex` instead implements focused facilities not rea
 > 
 > **AI-Assisted Development Disclosure**
 > 
-> This project has been developed with extensive generative-AI assistance. Assistance covered design discussion, implementation, testing, technical review, and documentation. See [AI_DISCLOSURE.md](AI_DISCLOSURE.md) for further details. Responsibility for the published software remains with the maintainer.
+> This project has been developed with extensive generative-AI assistance. Assistance covered project exploration, design discussion, specification development, implementation, testing, technical review, and documentation. See [AI_DISCLOSURE.md](AI_DISCLOSURE.md) for further details. Responsibility for the published software remains with the maintainer.
 
 ## 1. SQL API
 
