@@ -1,4 +1,4 @@
-# AI-assisted development disclosure
+# AI-Assisted Development Disclosure
 
 This project has been developed with extensive assistance from generative AI, primarily OpenAI ChatGPT. AI assistance was used throughout both code and documentation development, including design discussion, implementation, test generation, technical review, and prose drafting and revision.
 
