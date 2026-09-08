@@ -1,5 +1,5 @@
 ---
-url: https://chatgpt.com/c/6a9cf257-d748-83eb-93ad-1f1a3999eb9a
+url: https://chatgpt.com/c/6a9fba3e-fb3c-83eb-9509-d15d0bed2caf
 ---
 
 ## `icuex` SQLite extension specification

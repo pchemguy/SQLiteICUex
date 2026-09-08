@@ -1,5 +1,5 @@
 ---
-url: https://chatgpt.com/c/6a9cf257-d748-83eb-93ad-1f1a3999eb9a
+url: https://chatgpt.com/c/6a9fba3e-fb3c-83eb-9509-d15d0bed2caf
 ---
 
 # ICUex
@@ -11,6 +11,10 @@ url: https://chatgpt.com/c/6a9cf257-d748-83eb-93ad-1f1a3999eb9a
 
 `icuex.c` uses only public SQLite and ICU APIs. It does not copy or call private implementation from SQLite's `ext/icu/icu.c`. That extension may be enabled separately when its broader SQL surface is wanted, but it is not a build or
 source-order prerequisite. `icuex` instead implements focused facilities not readily exposed by `icu.c`: predefined collations, full case folding, Unicode normalization, and normalized search-key generation. The supported data interface is SQL.
+
+> [!IMPORTANT] AI-Assisted Development Disclosure
+> 
+> **AI-assisted development:** This project has been developed with extensive generative-AI assistance. Assistance covered design discussion, implementation, testing, technical review, and documentation. See [AI_DISCLOSURE.md](AI_DISCLOSURE.md) for further details. Responsibility for the published software remains with the maintainer.
 
 ## 1. SQL API
 
