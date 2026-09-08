@@ -6,6 +6,8 @@ The project has been developed under human direction, and responsibility for the
 
 ## README.md Warning Template
 
-> [!IMPORTANT] AI-Assisted Development Disclosure
+> [!IMPORTANT]
 > 
-> **AI-assisted development:** This project has been developed with extensive generative-AI assistance. Assistance covered design discussion, implementation, testing, technical review, and documentation. See [AI_DISCLOSURE.md](AI_DISCLOSURE.md) for further details. Responsibility for the published software remains with the maintainer.
+> **AI-Assisted Development Disclosure**
+> 
+> This project has been developed with extensive generative-AI assistance. Assistance covered design discussion, implementation, testing, technical review, and documentation. See [AI_DISCLOSURE.md](AI_DISCLOSURE.md) for further details. Responsibility for the published software remains with the maintainer.
