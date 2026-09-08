@@ -1,3 +1,6 @@
+---
+url: https://chatgpt.com/c/6a9fba3e-fb3c-83eb-9509-d15d0bed2caf
+---
 
 ## 📗 SQLite Forum Post
 
@@ -119,3 +122,46 @@ Unlike `icu.c`’s `lower()` overload, full case folding is intended for caseles
 | `NFKD_CF_STRIP` | NFKD, removal of code points with nonzero canonical combining class, then NFKC case folding |
 
 The source is released into the public domain under [The Unlicense](https://unlicense.org). Development involved extensive generative-AI assistance across implementation, testing, review, and documentation; details are provided in [AI_DISCLOSURE.md](https://github.com/pchemguy/SQLiteICUex/blob/main/AI_DISCLOSURE.md).
+
+---
+---
+
+## 📗 Reddit
+
+**ICUex: predefined ICU collations, Unicode case folding, and normalization for SQLite**
+
+I have published [ICUex](https://github.com/pchemguy/SQLiteICUex), a small ICU-backed C extension designed to complement SQLite’s `ext/icu/icu.c`. 
+
+**Feature Highlights**
+
+- automatically registered collations
+- locale-independent full case folding
+- Unicode normalization and normalized search keys
+- loadable extension or a static SQLite build
+- released into the public domain under [The Unlicense](https://unlicense.org)
+- developed with extensive generative-AI assistance ([disclosure](https://github.com/pchemguy/SQLiteICUex/blob/main/AI_DISCLOSURE.md))
+
+**Predefined automatically available collations**
+
+| Collation   | Behavior                                                                                                                                         |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `UTF_CI`    | ICU root collation, case-insensitive and accent-sensitive; `е/ё` and `и/й` remain distinct                                                       |
+| `UTF_CI_AI` | Compares `NFKD_CF_STRIP` keys; case- and compatibility-insensitive, with nonzero-CCC combining marks removed; thus `е/ё` and `и/й` compare equal |
+
+Once ICUex is loaded or statically registered, neither collation requires icu_load_collation(), locale selection, or setup SQL.
+
+**Functions for Unicode case folding and normalization**
+
+| Function                    | Behavior                                       |
+| --------------------------- | ---------------------------------------------- |
+| `str_casefold(text)`        | Locale-independent full Unicode case folding   |
+| `str_normalize(text, mode)` | Unicode normalization or search-key generation |
+
+Unlike `icu.c`’s `lower()` overload, full case folding is intended for caseless matching. For example, `Straße` becomes `strasse`; Greek sigma variants and compatibility ligatures are also folded consistently.
+
+| Mode            | Operation                                                                                   |
+| --------------- | ------------------------------------------------------------------------------------------- |
+| `NFC`, `NFD`    | Canonical normalization                                                                     |
+| `NFKC`, `NFKD`  | Compatibility normalization                                                                 |
+| `NFKC_CF`       | NFKC case folding and removal of default-ignorable code points                              |
+| `NFKD_CF_STRIP` | NFKD, removal of code points with nonzero canonical combining class, then NFKC case folding |
