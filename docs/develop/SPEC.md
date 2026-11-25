@@ -37,10 +37,10 @@ The source shall begin with the standard dual-mode SQLite declarations:
 
 ```c
 #ifndef SQLITE_CORE
-## include "sqlite3ext.h"
+# include "sqlite3ext.h"
   SQLITE_EXTENSION_INIT1
 #else
-## include "sqlite3.h"
+# include "sqlite3.h"
 #endif
 ```
 
@@ -55,9 +55,9 @@ int sqlite3IcuexInit(sqlite3 *db) {
 
 #else
 
-## if defined(_WIN32)
+# if defined(_WIN32)
 __declspec(dllexport)
-## endif
+# endif
 int sqlite3_icuex_init(
     sqlite3 *db,
     char **pzErrMsg,
@@ -133,20 +133,9 @@ It must also not reference any private definition from `ext/icu/icu.c`.
 
 #### Built-in build-system responsibility
 
-The surrounding build system is responsible for:
+The build must compile `icuex.c` in `SQLITE_CORE` mode, provide ICU headers and libraries, and register ICUex for every new connection. It may include `icuex.c` after the amalgamation (which defines `SQLITE_CORE` internally), or compile it as a separate object with `SQLITE_CORE` defined.
 
-1. Starting with SQLite's standard amalgamation.
-2. Placing the contents of `icuex.c`, or an `#include "icuex.c"` directive, after `sqlite3.c` in the same translation unit.
-3. Building that translation unit with `SQLITE_CORE`, which the standard amalgamation already defines for itself.
-4. Supplying this compiler definition:
-
-   ```text
-   SQLITE_EXTRA_AUTOEXT=sqlite3IcuexInit
-   ```
-
-5. Providing ICU headers and linking the ICU internationalization, common, and data libraries required by the selected ICU build.
-
-With `SQLITE_EXTRA_AUTOEXT` defined, standard SQLite declares the selected function with signature `int (sqlite3*)`, places it in its built-in-extension initializer array, calls it for every new connection, and propagates a non-`SQLITE_OK` result. No additional initializer module, direct `sqlite3_auto_extension()` call, or SQLite source modification other than appending `icuex.c` is required.
+For ICUex alone, compile `sqlite3.c` with `SQLITE_EXTRA_AUTOEXT=sqlite3IcuexInit`. SQLite calls the selected `int (sqlite3*)` initializer for each connection and propagates a non-`SQLITE_OK` result. A build that registers multiple modules may instead select a dispatcher that calls `sqlite3IcuexInit(db)` and propagates its result. The dispatcher belongs to the build, not to ICUex; see the [Windows and manual build recipes](../../README.md#3-build-and-integration).
 
 `ext/icu/icu.c` may independently be included when its own SQL API is wanted, but it is neither a prerequisite nor a provider of implementation details for `icuex`.
 
@@ -224,7 +213,7 @@ SELECT 'и' = 'й' COLLATE UTF_CI;
 
 #### `UTF_CI_AI`
 
-`UTF_CI_AI` shall not use `UCOL_PRIMARY` and shall not be described as equivalent to `icu_load_collation()`. ICU root primary strength preserves some letter distinctions, including `Й/и` and `Ё/е`; it is not a universal decomposition-and-diacritic-removal operation.
+`UTF_CI_AI` shall not use `UCOL_PRIMARY` and shall not be described as equivalent to `icu_load_collation()`. ICU root primary strength is not the specified search-key transformation: for example, with ICU 78.3 it distinguishes `Й/и`, which `UTF_CI_AI` equates.
 
 For each input string, `UTF_CI_AI` shall construct exactly the same normalized key as:
 
@@ -365,7 +354,7 @@ def nfkd_cf_strip(text):
 
 The filtering pass must iterate over Unicode code points using ICU UTF-16 iteration macros such as `U16_NEXT`, not individual UTF-16 code units.
 
-This operation filters by canonical combining class, not Unicode general category. A character categorized as `Mn`, `Mc`, or `Me` must remain if its CCC is zero. ICU defines `u_getCombiningClass()` as returning the canonical combining class of a code point. [ICU character API](https://unicode-org.github.io/icu-docs/apidoc/dev/icu4c/uchar_8h.html)
+The final filtering step uses canonical combining class, not Unicode general category. A character categorized as `Mn`, `Mc`, or `Me` must remain if it reaches that step and its CCC is zero. ICU defines `u_getCombiningClass()` as returning the canonical combining class of a code point. [ICU character API](https://unicode-org.github.io/icu-docs/apidoc/dev/icu4c/uchar_8h.html)
 
 Required behavior:
 

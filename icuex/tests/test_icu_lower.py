@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import sqlite3
 import warnings
+from collections.abc import Callable
 
 import pytest
-
 from test_casefold import CASEFOLD_DIVERGENCES
 
 
@@ -36,7 +36,7 @@ def _icu_root_lower(
     global _ICU_LOWER_UNAVAILABLE_REPORTED
 
     try:
-        return db.execute(
+        lowered = db.execute(
             "SELECT lower(?, 'root')", (source,)
         ).fetchone()[0]
     except sqlite3.Error as error:
@@ -51,8 +51,17 @@ def _icu_root_lower(
             _ICU_LOWER_UNAVAILABLE_REPORTED = True
         return None
 
+    if lowered is None:
+        warnings.warn(
+            f"ext/icu/icu.c lower() behavior not confirmed for {source!r}: "
+            "returned SQL NULL for non-NULL input",
+            IcuLowerBehaviorWarning,
+            stacklevel=2,
+        )
+    return lowered
 
-def _warn_if_icu_assertions_fail(description: str, check) -> None:
+
+def _warn_if_icu_assertions_fail(description: str, check: Callable[[], None]) -> None:
     """Run explicit assertions, converting only their failures to warnings."""
 
     try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -82,7 +83,7 @@ def test_utf_ci_ai_index_is_used_for_normalized_lookup(
 
 
 def test_file_schema_reopens_with_fresh_registration(
-    connect, tmp_path: Path
+    connect: Callable[[str | Path], sqlite3.Connection], tmp_path: Path
 ) -> None:
     """Use collations and generated expressions immediately after reopening."""
 
@@ -115,7 +116,9 @@ def test_file_schema_reopens_with_fresh_registration(
         second.close()
 
 
-def test_parameterized_statement_on_fresh_connection(connect) -> None:
+def test_parameterized_statement_on_fresh_connection(
+    connect: Callable[[str | Path], sqlite3.Connection],
+) -> None:
     """Prepare and execute SQL using icuex without prior initialization SQL."""
 
     connection = connect(":memory:")

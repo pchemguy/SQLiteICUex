@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -44,7 +44,7 @@ def db() -> Iterator[sqlite3.Connection]:
 
 
 @pytest.fixture
-def connect():
+def connect() -> Callable[[str | Path], sqlite3.Connection]:
     """Return the test suite's connection constructor.
 
     In built-in mode this proves automatic registration on independently

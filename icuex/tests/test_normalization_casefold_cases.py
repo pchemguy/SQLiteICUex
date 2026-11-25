@@ -6,7 +6,6 @@ import sqlite3
 
 import pytest
 
-
 MODES = ("NFC", "NFD", "NFKC", "NFKD", "NFKC_CF", "NFKD_CF_STRIP")
 
 CASES = [

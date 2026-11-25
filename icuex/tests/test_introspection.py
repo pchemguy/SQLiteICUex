@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
-
 
 SQLITE_DETERMINISTIC = 0x000000800
 SQLITE_DIRECTONLY = 0x000080000
@@ -36,15 +36,18 @@ def _assert_icuex_surface(connection: sqlite3.Connection) -> None:
     """Assert the exact icuex names, arities, encoding, and function flags."""
 
     collations = _collation_names(connection)
-    assert "UTF_CI" in collations
-    assert "UTF_CI_AI" in collations
+    missing = {"UTF_CI", "UTF_CI_AI"} - collations
+    assert not missing, (
+        f"Python's SQLite {sqlite3.sqlite_version} is missing {sorted(missing)}. "
+        "Use a Python runtime with built-in ICUex, or set ICUEX_EXTENSION "
+        "to the standalone module (not sqlite3.dll)."
+    )
 
     expected = {"str_casefold": 1, "str_normalize": 2}
     for name, arity in expected.items():
         rows = _function_rows(connection, name)
-        matching = [row for row in rows if row["narg"] == arity]
-        assert len(matching) == 1
-        row = matching[0]
+        assert [row["narg"] for row in rows] == [arity], name
+        row = rows[0]
         assert row["type"] == "s"
         assert row["enc"].casefold() == "utf8"
         assert row["flags"] & SQLITE_DETERMINISTIC
@@ -62,7 +65,9 @@ def test_surface_is_present_on_fresh_connection(
     _assert_icuex_surface(db)
 
 
-def test_surface_is_present_on_simultaneous_connections(connect) -> None:
+def test_surface_is_present_on_simultaneous_connections(
+    connect: Callable[[str | Path], sqlite3.Connection],
+) -> None:
     """Require independent registration on concurrent connections."""
 
     first = connect(":memory:")
@@ -76,7 +81,7 @@ def test_surface_is_present_on_simultaneous_connections(connect) -> None:
 
 
 def test_surface_survives_file_database_reopen(
-    connect, tmp_path: Path
+    connect: Callable[[str | Path], sqlite3.Connection], tmp_path: Path
 ) -> None:
     """Require registration before and after reopening a database."""
 
