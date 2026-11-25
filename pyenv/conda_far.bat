@@ -31,11 +31,11 @@
 ::      1. Verifies cmd.exe configuration and base environment cleanliness.
 ::      2. Validates target Conda installation files (unless /cache is set).
 ::      3. Configures cache directories and profile cache junctions.
-::      4. Activates MS Build Tools environment or notifies user of failure.
-::      5. Ensures Conda (or Micromamba) environment readiness.
-::      6. Sequentially activates extra config_*.bat environment scripts.
-::      7. Exposes DISTUTILS_USE_SDK=1 to enable setuptools to reuse the
-::         existing MSVC environment instead of launching new compiler shells.
+::      4. Calls the sibling msbuild.bat when present to check MSVC and the
+::         resolved linker. A failed check stops activation.
+::      5. On checker success, sets DISTUTILS_USE_SDK=1 for setuptools.
+::      6. Activates the target prefix and verifies Python.
+::      7. Calls each sibling config_*.bat in turn.
 ::      8. Starts FAR Manager if available, or leaves the user in a prepared
 ::         cmd.exe session.
 ::
@@ -153,27 +153,6 @@ if defined _ARG_CACHE (
     goto :CLEANUP
 )
 
-:: --- Rename m2 link.exe before MSBuild check, if present ---
-
-if exist "%__CONDA_PREFIX%\Library\usr\bin\link.exe" (
-    echo %INFO% Renaming m2 link.exe to link_.exe to resolve MSBuild linker collision.
-    if exist "%__CONDA_PREFIX%\Library\usr\bin\link_.exe" (
-        echo %WARN% Removing previous backup "%__CONDA_PREFIX%\Library\usr\bin\link_.exe".
-        del /F /Q "%__CONDA_PREFIX%\Library\usr\bin\link_.exe"
-        if not "!ERRORLEVEL!"=="0" (
-            echo %ERROR% Failed to remove existing "%__CONDA_PREFIX%\Library\usr\bin\link_.exe". Aborting...
-            set "FINAL_EXIT_CODE=1"
-            goto :CLEANUP
-        )
-    )
-    move "%__CONDA_PREFIX%\Library\usr\bin\link.exe" "%__CONDA_PREFIX%\Library\usr\bin\link_.exe" >nul
-    if not "!ERRORLEVEL!"=="0" (
-        echo %ERROR% Failed to rename "%__CONDA_PREFIX%\Library\usr\bin\link.exe". Aborting...
-        set "FINAL_EXIT_CODE=1"
-        goto :CLEANUP
-    )
-)
-
 :: --- MS Build Tools ---
 
 if not exist "%~dp0msbuild.bat" (
@@ -188,7 +167,7 @@ if not "%ERRORLEVEL%"=="0" (
     goto :CLEANUP
 )
 
-:: --- Restore color variables cleared by msbuild.bat ---
+:: --- Reapply the launcher color scheme after msbuild.bat ---
 
 call :COLOR_SCHEME
 
