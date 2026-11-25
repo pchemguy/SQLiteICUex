@@ -6,7 +6,6 @@ import sqlite3
 
 import pytest
 
-
 CASEFOLD_DIVERGENCES = [
     pytest.param("Straße", "strasse", "straße", id="sharp-s-in-word"),
     pytest.param("ß", "ss", "ß", id="sharp-s"),
@@ -33,6 +32,7 @@ CASEFOLD_DIVERGENCES = [
         ("Straße", "strasse"),
         ("ЁЙ", "ёй"),
         ("Σσς", "σσσ"),
+        ("Iİıi", "ii\u0307ıi"),  # Default full folding, not locale-aware casing.
         ("ﬀ", "ff"),
         ("ИЙЕЁЬЪ", "ийеёьъ"),
         ("\ufeffA", "\ufeffa"),

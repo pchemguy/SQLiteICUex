@@ -18,6 +18,7 @@ import pytest
         ("ЁЙÉ", "еиe"),
         ("Ａ①", "a1"),
         ("A\u00adB", "ab"),
+        ("A\ufe0f", "a"),  # CCC zero, but default-ignorable before stripping.
         ("😀", "😀"),
     ],
 )
@@ -51,6 +52,19 @@ def test_nfkd_cf_strip_preserves_ccc_zero_mark(
     assert db.execute(
         "SELECT str_normalize(?, 'NFKD_CF_STRIP')", (source,)
     ).fetchone()[0] == "a\u20dd"
+
+
+def test_fold_precedes_stripping_in_search_key_and_collation(
+    db: sqlite3.Connection,
+) -> None:
+    """U+0345 folds to iota; stripping nonzero CCC first would lose it."""
+
+    result = db.execute(
+        "SELECT str_normalize(?1, 'NFKD_CF_STRIP'), "
+        "?1 = ?2 COLLATE UTF_CI_AI, ?1 = ?3 COLLATE UTF_CI_AI",
+        ("α\u0345", "αι", "α"),
+    ).fetchone()
+    assert result == ("αι", 1, 0)
 
 
 def test_nfkd_cf_strip_is_idempotent(db: sqlite3.Connection) -> None:

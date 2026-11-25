@@ -9,14 +9,15 @@ url: https://chatgpt.com/c/6a9fba3e-fb3c-83eb-9509-d15d0bed2caf
 - With `SQLITE_CORE`, it is a built-in component registered for each new connection through SQLite's `SQLITE_EXTRA_AUTOEXT` hook.
 - Without `SQLITE_CORE`, it is a conventional loadable extension exporting `sqlite3_icuex_init()`.
 
-`icuex.c` uses only public SQLite and ICU APIs. It does not copy or call private implementation from SQLite's `ext/icu/icu.c`. That extension may be enabled separately when its broader SQL surface is wanted, but it is not a build or
-source-order prerequisite. `icuex` instead implements focused facilities not readily exposed by `icu.c`: predefined collations, full case folding, Unicode normalization, and normalized search-key generation. The supported data interface is SQL.
+[`src/icuex.c`](src/icuex.c) complements SQLite's `ext/icu/icu.c`: it provides predefined collations, full case folding, normalization, and search keys through SQL, using only public SQLite and ICU APIs. Enable SQLite's own ICU extension separately if you also want its SQL functions.
 
 > [!IMPORTANT]
 > 
 > **AI-Assisted Development Disclosure**
 > 
 > This project has been developed with extensive generative-AI assistance. Assistance covered project exploration, design discussion, specification development, implementation, testing, technical review, and documentation. See [AI_DISCLOSURE.md](AI_DISCLOSURE.md) for further details. Responsibility for the published software remains with the maintainer.
+
+[Build with the Windows harness](#windows-msvc-build-from-this-checkout) · [Build against a standard amalgamation](#built-in-mode) · [Build a loadable extension](#loadable-extension-mode) · [Run the tests](#6-testing)
 
 ## 1. SQL API
 
@@ -42,7 +43,7 @@ SELECT 'Ａ①' = 'a1' COLLATE UTF_CI_AI;             -- 1
 
 `UTF_CI` is an ICU root linguistic collation and is not defined as a comparison of `str_casefold()` output. `UTF_CI_AI` has deliberately different semantics: each operand is transformed by NFKC_Casefold, then NFKD, then removal of every code point whose canonical combining class is nonzero. The resulting keys are compared lexicographically by Unicode code point. Thus `UTF_CI_AI` equality is the same as equality of the corresponding `NFKD_CF_STRIP` keys; no original text tiebreaker is applied.
 
-`UTF_CI_AI` is not equivalent to ICU root collation at `UCOL_PRIMARY`. Root primary strength retains some distinctions, including `Й/и` and `Ё/е`, and therefore does not implement universal accent removal. The normalized-key collation also applies compatibility mappings and removes default ignorables, so its concise name does not imply that case and accents are its only equivalences.
+`UTF_CI_AI` is not equivalent to ICU root collation at `UCOL_PRIMARY`. For example, with ICU 78.3, root primary treats `Ё/е` as equal but distinguishes `Й/и`; `UTF_CI_AI` equates both pairs. The normalized keys also apply compatibility mappings and remove default ignorables.
 
 The collations may be used in schema declarations and indexes:
 
@@ -128,7 +129,7 @@ SELECT str_normalize('ЁЙÉ', 'NFKD_CF_STRIP');
 
 The final character in that result is Latin `e`; normalization and CCC filtering do not transliterate Latin characters into Cyrillic.
 
-`NFKD_CF_STRIP` filters by canonical combining class, not Unicode general category. A mark in category `Mn`, `Mc`, or `Me` remains when its canonical combining class is zero.
+The final `NFKD_CF_STRIP` step filters by canonical combining class (CCC), not Unicode general category. A surviving CCC-zero mark such as U+20DD COMBINING ENCLOSING CIRCLE is retained; a default-ignorable mark such as U+FE0F VARIATION SELECTOR-16 has already been removed by NFKC_Casefold.
 
 ## 2. SQL contract
 
@@ -156,9 +157,52 @@ Inputs are expected to contain well-formed Unicode. Deliberately malformed SQLit
 
 ## 3. Build and integration
 
+### Windows: MSVC build from this checkout
+
+Use this recipe for a SQLite shell, DLL, and static library with ICUex **built in**. For a standalone `icuex.dll` to load into an existing SQLite, use [loadable-extension mode](#loadable-extension-mode) instead.
+
+**1. Activate a matching Conda environment.** Install MSVC C++ Build Tools and the Windows SDK first. Automatic discovery targets x64; x86 requires an initialized x86 tools prompt and a separately prepared x86 Conda prefix. If you already have a matching environment with ICU (headers, import libraries, and versioned runtime DLLs) and pytest, activate it and go to step 2.
+
+To create the bundled x64 environment, first read the [bootstrap cache notes](https://github.com/pchemguy/Conda-Bootstrap/blob/main/windows/Anaconda.md#cache-and-filesystem-changes): the scripts can replace the user's pip/uv caches with junctions and remove `%APPDATA%\mamba`. From the repository root in a clean Windows CMD (`cmd /E:ON /V:ON`, no Python or Conda on `PATH`):
+
+```bat
+set "PKGS=icu"
+call pyenv\Anaconda.bat
+call pyenv\conda_far.bat /batch
+```
+
+The full first run creates `pyenv\Anaconda` using the two local YAMLs; `PKGS` explicitly requests ICU at creation. `/init` skips the project test packages, and rerunning the bootstrap does not update an existing prefix. Install missing packages in an existing prefix after activation (e.g., `conda install -c conda-forge icu pytest`).
+
+**2. Select the source and build.** The [ICUex hook](sqlite_ext_icuex.bat) uses `out\cache\SQLiteICUex\src\icuex.c`. On a cache miss it downloads `main`; it does **not** pick up edits to this checkout. To build your checkout, start from the repository root with no previous `out` and seed the cache:
+
+```bat
+mkdir "out\cache\SQLiteICUex\src"
+copy /B "src\icuex.c" "out\cache\SQLiteICUex\src\icuex.c"
+call sqlite_msbuild_bare_icu_ext_extra.bat
+```
+
+The [preset](sqlite_msbuild_bare_icu_ext_extra.bat) enables Conda ICU, ZLIB, selected SQLite `ext/misc` modules, and this repository's ICUex hook. It registers ICUex through `sqlite3ExtraAutoExtInit`; do not add the single-extension compiler flag from the manual recipe below.
+
+SQLite is downloaded as a source snapshot, not a pinned release. Downloads and staged dependencies are reused: use separate build bases for different architectures, source revisions, or ICU installations. See the [upstream MSVC guide](https://github.com/pchemguy/SQLite-ICU-MinGW/blob/master/Current/MSVC/README.md) for cache recovery and build options. Its other project hooks and harness tests are not shipped here.
+
+**3. Check the packaged shell.** From the repository root, start `out\bin\sqlite3.exe -init NUL :memory:` and run this query without `.load` or setup SQL:
+
+```sql
+WITH letters(e, yo) AS (VALUES (char(0x435), char(0x451)))
+SELECT e = yo COLLATE UTF_CI, e = yo COLLATE UTF_CI_AI,
+       str_casefold('Stra' || char(0xDF) || 'e'),
+       str_normalize(char(0xC9), 'NFKD_CF_STRIP')
+FROM letters;
+-- Expected columns: 0, 1, strasse, e
+```
+
+Use `SELECT sqlite_source_id();` to identify the SQLite snapshot, and `.quit` to return to CMD.
+
+The runtime files (`sqlite3.exe`, `sqlite3.dll`, versioned ICU DLLs, and `zlib1.dll`) go in `out\bin`. Headers go in `out\include`; DLL consumers link `out\lib\import\sqlite3.lib`, while static consumers link `out\lib\static\libsqlite3.lib`. Collection is best effort and clears files from `out\bin`; check the artifacts you need and keep unrelated files elsewhere. This smoke test checks the shell, **not** the SQLite library loaded by Python; see [Testing](#6-testing).
+
 ### Built-in mode
 
-Download SQLite's standard amalgamation, place `icuex.c` after `sqlite3.c` in the same translation unit, and define:
+For a manual build without the Windows harness, use a SQLite amalgamation that supports `SQLITE_EXTRA_AUTOEXT`. In the following two built-in recipes, run the commands in the amalgamation directory with `shell.c`, `sqlite3.c`, `sqlite3.h`, and a copy of this repository's `src/icuex.c` alongside them. For the single-translation-unit recipe, define:
 
 ```text
 SQLITE_EXTRA_AUTOEXT=sqlite3IcuexInit
@@ -216,10 +260,10 @@ The compiler must see the ICU headers, and the final target must link the ICU in
 
 ### Loadable-extension mode
 
-Compile the source as a shared library without defining `SQLITE_CORE`. For example, on a Unix-like system with pkg-config:
+From the repository root, compile `src/icuex.c` as a shared library **without** defining `SQLITE_CORE`. You need SQLite's `sqlite3.h` and `sqlite3ext.h` and the ICU development files. On Linux with pkg-config:
 
 ```sh
-cc -O2 -fPIC -shared icuex.c -o icuex.so \
+cc -O2 -fPIC -shared $(pkg-config --cflags sqlite3) src/icuex.c -o icuex.so \
   $(pkg-config --cflags --libs icu-i18n icu-uc)
 ```
 
@@ -229,14 +273,14 @@ For MSVC with ICU supplied by Conda:
 cl /nologo /O2 /LD ^
   /I"C:\path\to\sqlite-amalgamation" ^
   /I"%CONDA_PREFIX%\Library\include" ^
-  icuex.c ^
+  src\icuex.c ^
   /link /LIBPATH:"%CONDA_PREFIX%\Library\lib" ^
   icuin.lib icuuc.lib icudt.lib /OUT:icuex.dll
 ```
 
-Matching ICU DLLs must be discoverable at runtime. Load the resulting library through SQLite's normal extension interface:
+Point the first include directory at your SQLite headers (e.g., `out\include` after the MSVC build). The loadable module and its ICU runtime libraries must match the host architecture and the libraries must be discoverable at runtime. In the SQLite CLI:
 
-```sql
+```text
 .load ./icuex
 ```
 
@@ -259,7 +303,7 @@ The standard ICU Normalizer2 objects are immutable singletons owned by ICU. `icu
 
 ## 5. Unicode and index stability
 
-Case-fold mappings, normalization data, and collation weights come from the ICU version linked into SQLite. Results for characters added or changed in newer Unicode versions may therefore change after an ICU upgrade.
+Case-fold mappings, normalization data, and collation weights come from the ICU used by ICUex, whether built into SQLite or loaded separately. Results may change after an ICU upgrade.
 
 Persistent indexes and constraints using `UTF_CI` depend on ICU collation data; those using `UTF_CI_AI` depend on ICU case-folding, compatibility, normalization, and combining-class data. After changing ICU versions or collation semantics, rebuild affected indexes:
 
@@ -267,32 +311,34 @@ Persistent indexes and constraints using `UTF_CI` depend on ICU collation data; 
 REINDEX;
 ```
 
+`REINDEX` does not recompute values in ordinary or STORED generated columns. Recompute persisted keys separately, and check for previously distinct keys that may now collide under a `UNIQUE` constraint.
+
 ## 6. Testing
 
-The test suite uses Python's standard `sqlite3` module and exercises behavior through SQL. It supports both integration modes.
+Run `python -m pytest` from the repository root with pytest installed in that interpreter. Both modes run the same SQL tests in [`icuex/tests/`](icuex/tests); neither requires installing a Python package from this repository.
 
-For a built-in build, use the Python module linked to that custom SQLite and run without setup:
-
-Install pytest in the active environment and run:
-
-```text
-python -m pytest
-```
-
-For a loadable build, specify the shared library. On Windows CMD:
+**Built-in.** Leave `ICUEX_EXTENSION` unset. Python's `sqlite3` module must already use the SQLite build containing ICUex. Building the Windows preset does not install `out\bin\sqlite3.dll` into Conda; running the packaged CLI or comparing SQLite version numbers alone does not establish which DLL Python loaded. Check in the interpreter that will run pytest:
 
 ```bat
-set "ICUEX_EXTENSION=B:\path\to\icuex.dll"
+set "ICUEX_EXTENSION="
+python -c "import sqlite3; db=sqlite3.connect(':memory:'); print(db.execute('SELECT sqlite_source_id(), str_casefold(?)', ('ABC',)).fetchone()); db.close()"
 python -m pytest
 ```
 
-On a Unix-like system:
+Expect the shell's SQLite source ID and `abc` without loading an extension. The source ID identifies the SQLite snapshot, not the ICUex revision or DLL path. On Windows the [upstream DLL-location helper](https://github.com/pchemguy/SQLite-ICU-MinGW/blob/master/Current/MSVC/tool/sqlite3_dll_path.py) reports the actual `sqlite3.dll` path when one is loaded.
 
-```sh
-ICUEX_EXTENSION=/path/to/icuex.so python -m pytest
+If the probe reports `no such function`, that Python runtime does not expose built-in ICUex. Use a Python runtime configured for the intended SQLite, or test a standalone module as described below. On POSIX, use `unset ICUEX_EXTENSION` to select built-in mode.
+
+**Loadable.** Use a Python SQLite build that supports extension loading, preferably without ICUex built in. Set `ICUEX_EXTENSION` to the full path of the **separately built module**, not the harness's `sqlite3.dll`. The fixture loads that module into each new connection and then disables further loading. From the directory where the loadable recipe produced its output:
+
+```bat
+set "ICUEX_EXTENSION=%CD%\icuex.dll"
+python -m pytest
 ```
 
-The fixture loads the configured library into every fresh connection and then disables further extension loading on that connection.
+```sh
+ICUEX_EXTENSION="$PWD/icuex.so" python -m pytest
+```
 
 The tests deliberately do not:
 
@@ -305,16 +351,8 @@ The tests deliberately do not:
 
 ## 7. Files
 
-```text
-icuex.c                         implementation
-README.md                       usage and integration guide
-pyproject.toml                  pytest configuration
-tests/conftest.py               built-in/loadable connection fixtures
-tests/test_introspection.py     per-connection registration checks
-tests/test_collations.py        collation behavior
-tests/test_casefold.py          Unicode default case folding
-tests/test_icu_lower.py         warning-based ext/icu lower() compatibility probes
-tests/test_normalization_*.py   standard and composite normalization
-tests/test_sql_contract.py      NULL, type, mode, and length contracts
-tests/test_schema_integration.py schema, index, and reopen behavior
-```
+- [`src/icuex.c`](src/icuex.c) — both extension entry points and the SQL implementation.
+- [`pyenv/`](pyenv) — Windows environment bootstrap, launcher, and project-specific package lists.
+- [`sqlite_msbuild.bat`](sqlite_msbuild.bat), [`sqlite_ext_icuex.bat`](sqlite_ext_icuex.bat), [`tool/`](tool) — Windows build, ICUex hook, and Tcl helpers.
+- [`pyproject.toml`](pyproject.toml) and [`icuex/tests/`](icuex/tests) — pytest configuration, connection fixtures, SQL acceptance tests, and optional `icu.c` compatibility probes.
+- [`docs/develop/SPEC.md`](docs/develop/SPEC.md) — extension contract.

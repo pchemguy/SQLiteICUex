@@ -88,6 +88,17 @@ def test_utf_ci_ai_does_not_merge_scripts(db: sqlite3.Connection) -> None:
     ).fetchone()[0] == 0
 
 
+def test_utf_ci_ai_orders_keys_by_code_point(db: sqlite3.Connection) -> None:
+    """U+E000 sorts before U+10000 by code point but after it by UTF-16 unit."""
+
+    bmp, supplementary = "\ue000", "\U00010000"
+    result = db.execute(
+        "SELECT ?1 < ?2 COLLATE UTF_CI_AI, ?2 > ?1 COLLATE UTF_CI_AI",
+        (bmp, supplementary),
+    ).fetchone()
+    assert result == (1, 1)
+
+
 def test_collation_applies_to_declared_column(db: sqlite3.Connection) -> None:
     """Verify equality inherits UTF_CI from a column declaration."""
 
